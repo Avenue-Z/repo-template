@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# shellcheck source=tests/lib.sh disable=SC1091
-source tests/lib.sh
+# shellcheck source=template-tests/lib.sh disable=SC1091
+source template-tests/lib.sh
 
 REPO_RULESET=.github/rulesets/repo-ruleset.json
 ORG_RULESET=.github/rulesets/org-ruleset.json
@@ -24,11 +24,67 @@ for f in "$REPO_RULESET" "$ORG_RULESET"; do
   assert_eq "0" "$count" "$f required_approving_review_count is 0"
 done
 
+# ---------------------------------------------------------------------------------------
+# THE ORG RULESET MUST NOT REQUIRE STATUS CHECKS. It targets repository_name ~ALL — every
+# repo in Avenue-Z, ~64 of them, of which none was generated from this template and none has
+# guard-base-branch.yml or secret-scan.yml. A required check that never reports does not fail
+# a PR; it hangs it PENDING FOREVER. With enforcement:active and bypass_actors:[], one
+# `apply-rulesets.sh --org` would take push AND merge away from every repo in the org at once.
+#
+# This is the assertion that keeps that landmine from being re-laid. Required checks are
+# per-repo (repo-ruleset.json), applied only to repos that ship the workflows.
+echo "rulesets: the ORG ruleset must declare NO required_status_checks (~ALL includes ~64 repos with no CI)"
+org_checks=$(jq -r '[.rules[] | select(.type=="required_status_checks")] | length' "$ORG_RULESET")
+assert_eq "0" "$org_checks" "$ORG_RULESET has zero required_status_checks rules"
+org_target=$(jq -r '.conditions.repository_name.include | join(",")' "$ORG_RULESET")
+if [ "$org_target" = "~ALL" ] && [ "$org_checks" != "0" ]; then
+  fail "$ORG_RULESET targets ~ALL repos AND requires status checks — every repo without those workflows becomes permanently unmergeable"
+else
+  pass "$ORG_RULESET does not combine a ~ALL target with required status checks"
+fi
+
 echo "rulesets: required status check contexts match real workflow job keys"
+contexts=$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' "$REPO_RULESET" | sort)
+expected=$(printf 'guard-base-branch\nsecret-scan')
+assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {guard-base-branch, secret-scan}"
+
+# ---------------------------------------------------------------------------------------
+# THE THREE FIELDS THAT SILENTLY DEFANG A RULESET. Each of these was, at some point in this
+# repo's history, wrong — and the whole suite stayed green:
+#
+#   bypass_actors: [{"actor_type":"OrganizationAdmin","bypass_mode":"always"}]
+#       -> verified live: enforcement reads "active" while an org owner pushes straight to
+#          main. A ruleset that exempts exactly the people most likely to push to main
+#          protects nothing. It must be EMPTY.
+#   enforcement: "evaluate"
+#       -> GitHub reports what WOULD have happened and blocks nothing. Looks identical in
+#          the API response except for one word.
+#   ref_name.include missing dev/staging
+#       -> main stays protected, the two branches everyone actually works on do not.
+echo "rulesets: bypass_actors must be EMPTY (an org-admin bypass makes 'enforcement: active' a lie)"
 for f in "$REPO_RULESET" "$ORG_RULESET"; do
-  contexts=$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' "$f" | sort)
-  expected=$(printf 'guard-base-branch\nsecret-scan')
-  assert_eq "$expected" "$contexts" "$f required contexts == {guard-base-branch, secret-scan}"
+  n=$(jq -r '.bypass_actors | length' "$f")
+  assert_eq "0" "$n" "$f bypass_actors is []"
+done
+
+echo "rulesets: enforcement must be 'active' ('evaluate' reports violations and blocks nothing)"
+for f in "$REPO_RULESET" "$ORG_RULESET"; do
+  assert_eq "active" "$(jq -r '.enforcement' "$f")" "$f enforcement is active"
+done
+
+echo "rulesets: ref_name.include must cover main, staging AND dev"
+want_refs=$(printf 'refs/heads/main\nrefs/heads/staging\nrefs/heads/dev')
+for f in "$REPO_RULESET" "$ORG_RULESET"; do
+  got_refs=$(jq -r '.conditions.ref_name.include[]' "$f")
+  assert_eq "$want_refs" "$got_refs" "$f protects exactly main, staging, dev"
+done
+
+echo "rulesets: deletion and non_fast_forward rules must both be present"
+for f in "$REPO_RULESET" "$ORG_RULESET"; do
+  for rule in deletion non_fast_forward; do
+    n=$(jq -r --arg r "$rule" '[.rules[] | select(.type==$r)] | length' "$f")
+    assert_eq "1" "$n" "$f declares the '$rule' rule"
+  done
 done
 
 # ---------------------------------------------------------------------------------------
@@ -77,6 +133,8 @@ sys.exit(1)
 PY
 }
 
+# Both files are still swept: if a required check is ever re-added to the org ruleset, the
+# assertion above fails AND this one holds it to the same reachability bar.
 echo "rulesets: every required context resolves to a REACHABLE (existing, non-matrix) job"
 for f in "$REPO_RULESET" "$ORG_RULESET"; do
   for ctx in $(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' "$f"); do

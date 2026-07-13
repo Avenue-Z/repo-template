@@ -22,13 +22,28 @@ STACK="$1"; shift
 case "${STACK}" in python|node) ;; *) die "stack must be 'python' or 'node', got '${STACK}'" ;; esac
 while [ $# -gt 0 ]; do
   case "$1" in
-    --team)    TEAM="${2:-}"; [ -n "${TEAM}" ] || die "--team needs a slug"; shift 2 ;;
+    # An empty value is not the only bad value: `--team --no-push` would silently set
+    # TEAM='--no-push' and then go looking for a team by that name. Anything starting
+    # with '-' is a flag the user forgot to give a value to, not a slug.
+    --team)    TEAM="${2:-}"
+               [ -n "${TEAM}" ] || die "--team needs a slug"
+               case "${TEAM}" in -*) die "--team needs a slug, got the flag '${TEAM}'" ;; esac
+               shift 2 ;;
     --no-push) PUSH=0; shift ;;
     *)         die "unknown flag '$1'" ;;
   esac
 done
 
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+
+# HEAD MUST be dev. GitHub's "Use this template" gives you a single branch — main — so
+# without this check the init commit lands on main, `dev` is never created, and the push
+# dies with "src refspec dev does not match any" AFTER the commit. Worse, if dev exists
+# but is not HEAD, dev is left stale — still carrying templates/ — and dev is the branch
+# developers actually work on. Assert before we mutate anything.
+HEAD_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+[ "${HEAD_BRANCH}" = dev ] || die "HEAD is '${HEAD_BRANCH:-detached}', not 'dev'. This script cuts staging and main from dev.
+       Run: git checkout -b dev   (or: git checkout dev)   then re-run."
 
 # NOTE: every function is defined BEFORE it is called. Bash executes a script
 # sequentially — a call placed above its definition dies with "command not found".
@@ -62,19 +77,37 @@ resolve_codeowners() {
 
   # Existence is necessary but NOT sufficient: the team must also hold write access
   # on THIS repo, or the CODEOWNERS entry is silently ignored just the same.
+  #
+  # The Accept header is REQUIRED. Without it this endpoint answers 204 No Content with an
+  # EMPTY BODY, so `-q .permissions.push` yields "" — never "true" — and the check warns
+  # "no WRITE access" for every team on earth, including the ones that have it. The
+  # documented media type below returns a real JSON body: {"permissions":{"push":true,...},
+  # "role_name":"write",...}. A check that cannot say yes is not a check.
   local repo perm
   repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')"
   if [ -n "${repo}" ]; then
-    if perm=$(gh api "orgs/${ORG}/teams/${TEAM}/repos/${repo}" -q '.permissions.push' 2>&1); then
-      [ "${perm}" = "true" ] || warn "team '${TEAM}' has no WRITE access to ${repo} — CODEOWNERS will be silently ignored until it does."
+    if perm=$(gh api -H "Accept: application/vnd.github.v3.repository+json" \
+                "orgs/${ORG}/teams/${TEAM}/repos/${repo}" -q '.permissions.push' 2>&1); then
+      [ "${perm}" = "true" ] || warn "team '${TEAM}' has no WRITE access to ${repo} (push=${perm:-unknown}) — CODEOWNERS will be silently ignored until it does."
+    elif grep -qE '"status": *"404"|HTTP 404|Not Found' <<<"${perm}"; then
+      # A 404 here is an ANSWER: the team is not attached to the repo at all.
+      warn "team '${TEAM}' is not attached to ${repo} — grant it write access or CODEOWNERS is inert."
     else
-      grep -qE '"status": *"404"|HTTP 404|Not Found' <<<"${perm}" \
-        && warn "team '${TEAM}' is not attached to ${repo} — grant it write access or CODEOWNERS is inert." \
-        || die "cannot check team write access (not a 404): ${perm}"
+      # Anything else (auth, network, rate limit) is NOT an answer. Do not guess.
+      # Written as if/elif/else, not `grep && warn || die`: in the && || form, `die`
+      # also fires whenever `warn` itself returns non-zero (shellcheck SC2015).
+      die "cannot check team write access (not a 404 — auth? network? rate limit?): ${perm}"
     fi
   fi
 
-  sed "s|@${ORG}/TEAM_SLUG|@${ORG}/${TEAM}|" .github/CODEOWNERS.tmpl > .github/CODEOWNERS
+  # Write the LIVE file — without the template's "TEMPLATE — not live" preamble, which
+  # would otherwise sit as the first line of the file that IS live, contradicting itself.
+  {
+    printf '# Code owners. Written by scripts/init-repo.sh after verifying that\n'
+    printf '# @%s/%s exists in the org.\n' "${ORG}" "${TEAM}"
+    sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
+        -e "s|@${ORG}/TEAM_SLUG|@${ORG}/${TEAM}|" .github/CODEOWNERS.tmpl
+  } > .github/CODEOWNERS
   rm -f .github/CODEOWNERS.tmpl
   info "wrote .github/CODEOWNERS for @${ORG}/${TEAM}"
 }
@@ -94,8 +127,16 @@ ensure_branches() {
     fi
   done
   if [ "${PUSH}" -eq 1 ]; then
-    git push -u origin dev staging main
-    info "pushed dev, staging, main"
+    # Push only what exists. Naming a branch that isn't there aborts the whole push with
+    # "src refspec X does not match any" — and pushes nothing at all, including the
+    # branches that WERE fine.
+    local existing=()
+    for b in dev staging main; do
+      if git rev-parse --verify -q "${b}" >/dev/null; then existing+=("${b}"); fi
+    done
+    [ "${#existing[@]}" -gt 0 ] || die "no dev/staging/main branch exists to push"
+    git push -u origin "${existing[@]}"
+    info "pushed ${existing[*]}"
   else
     info "--no-push: branches created locally only"
   fi

@@ -97,17 +97,81 @@ else
   pass "--team rejects a value that begins with '-'"
 fi
 
-# Minor — the LIVE CODEOWNERS must not carry the template's "TEMPLATE — not live" preamble
+# ---------------------------------------------------------------------------------------
+# NO GITHUB REMOTE = "I COULD NOT CHECK", NOT "IT'S FINE".
+#
+# These clones have a local-path origin, so `gh repo view` fails and there is no repo to check
+# team write access against. The script used to collapse that (and an expired token, and a
+# network blip) into repo="" and then write CODEOWNERS anyway — shipping the inert
+# enforcement-theater file the whole feature exists to prevent, while the test said "ok".
+#
+# The honest behaviour: write the file, but say LOUDLY that write access is UNVERIFIED and the
+# file may be inert. Drive it with a stub whose team lookup succeeds and whose `repo view` fails
+# the way a missing GitHub remote actually fails.
+echo "init-repo: no GitHub remote — CODEOWNERS is written but LOUDLY flagged as unverified"
+STUB_NOREMOTE="$(mktemp -d)"
+cat > "${STUB_NOREMOTE}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"repo view"*)
+    echo "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use \`gh auth login\`" >&2
+    exit 1 ;;
+  *"orgs/Avenue-Z/teams/automation"*)
+    echo '{"slug":"automation"}' ;;
+  *)
+    echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB_NOREMOTE}/gh"
+
 cd "${WORK}" && rm -rf repo4 && git clone -q "${REPO_ROOT}" repo4 && cd repo4
 git checkout -qb dev 2>/dev/null || git checkout -q dev
-if ./scripts/init-repo.sh python --team automation --no-push >/dev/null 2>&1 && [ -f .github/CODEOWNERS ]; then
+if out=$(PATH="${STUB_NOREMOTE}:${PATH}" ./scripts/init-repo.sh python --team automation --no-push 2>&1); then
+  pass "no-remote path exits 0 (it is an answer: there is no repo to check yet)"
+else
+  fail "no-remote path should exit 0, got non-zero. Output: ${out}"
+fi
+assert_match "warns that write access is UNVERIFIED" 'UNVERIFIED' "$out"
+assert_match "warns the file MAY BE INERT" 'MAY BE INERT' "$out"
+assert_match "says GitHub silently ignores such an entry" 'silently ignores' "$out"
+assert_file  "CODEOWNERS still written (with the caveat, not silently)" .github/CODEOWNERS
+if [ -f .github/CODEOWNERS ]; then
   live="$(cat .github/CODEOWNERS)"
   assert_nomatch "live CODEOWNERS has no 'TEMPLATE — not live' preamble" 'TEMPLATE .. not live' "$live"
   assert_match   "live CODEOWNERS names the resolved team" '@Avenue-Z/automation' "$live"
-else
-  # No network / no auth for the real team: skip rather than report a false failure.
-  pass "skipped CODEOWNERS-preamble check (team 'automation' not resolvable in this env)"
+  # The file must not CLAIM a verification that never happened — that is the same lie in
+  # a different place.
+  assert_match   "the file itself records that write access was NOT verified" 'could NOT verify' "$live"
+  assert_nomatch "the file does not claim verified write access" 'AND holds write access' "$live"
 fi
+rm -rf "${STUB_NOREMOTE}"
+
+echo "init-repo: 'gh repo view' fails for a NON-remote reason — must die, never write unverified"
+STUB_APIFAIL="$(mktemp -d)"
+cat > "${STUB_APIFAIL}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"repo view"*)
+    echo '{"message":"Bad credentials","status":"401"}' >&2; exit 1 ;;
+  *"orgs/Avenue-Z/teams/automation"*)
+    echo '{"slug":"automation"}' ;;
+  *)
+    echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB_APIFAIL}/gh"
+
+cd "${WORK}" && rm -rf repo4b && git clone -q "${REPO_ROOT}" repo4b && cd repo4b
+git checkout -qb dev 2>/dev/null || git checkout -q dev
+if out=$(PATH="${STUB_APIFAIL}:${PATH}" ./scripts/init-repo.sh python --team automation --no-push 2>&1); then
+  fail "a 401 from 'gh repo view' was silently treated as 'no remote' and CODEOWNERS was written. Output: ${out}"
+else
+  pass "a 401 from 'gh repo view' is fatal (non-zero exit) — a failure to verify is not a pass"
+fi
+assert_match   "says it cannot determine the target repo" 'cannot determine the target repo' "$out"
+assert_no_file "no CODEOWNERS written when the repo could not be identified" .github/CODEOWNERS
+assert_file    "CODEOWNERS.tmpl preserved" .github/CODEOWNERS.tmpl
+rm -rf "${STUB_APIFAIL}"
 
 # Criterion (Important 6) — HEAD must be dev; a single-branch 'Use this template' copy
 # lands the init commit on main and then dies mid-flight on `git push dev`.

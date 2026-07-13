@@ -4,6 +4,13 @@
 #
 #   ./scripts/init-repo.sh <python|node> [--team <slug>] [--no-push]
 #
+# --team <slug>: writes .github/CODEOWNERS naming @Avenue-Z/<slug>, after verifying the
+#   team exists. If the team exists but lacks write access to the repo, the script GRANTS
+#   it push (write) access rather than just warning — GitHub silently ignores a CODEOWNERS
+#   entry for a team without write, so a warning nobody actions leaves the file inert.
+#   Granting requires repo-admin or org-owner rights; if that fails the script dies rather
+#   than write a CODEOWNERS that GitHub will ignore.
+#
 set -euo pipefail
 
 ORG="Avenue-Z"
@@ -51,7 +58,8 @@ HEAD_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
 
 # ------------------------------------------------------------------ CODEOWNERS
 # GitHub SILENTLY IGNORES a CODEOWNERS entry whose team does not exist or lacks
-# write access. So we verify, or we ship no file at all — never enforcement theater.
+# write access. So we verify — granting write when it's missing — or we ship no
+# file at all. Never enforcement theater.
 #
 # The guard below distinguishes "team is absent" (404 — an answer) from "I could not
 # tell" (auth, network, rate limit — NOT an answer). set -e is disabled inside an
@@ -88,15 +96,38 @@ resolve_codeowners() {
   if [ -n "${repo}" ]; then
     if perm=$(gh api -H "Accept: application/vnd.github.v3.repository+json" \
                 "orgs/${ORG}/teams/${TEAM}/repos/${repo}" -q '.permissions.push' 2>&1); then
-      [ "${perm}" = "true" ] || warn "team '${TEAM}' has no WRITE access to ${repo} (push=${perm:-unknown}) — CODEOWNERS will be silently ignored until it does."
+      :   # got a real answer, true or false
     elif grep -qE '"status": *"404"|HTTP 404|Not Found' <<<"${perm}"; then
-      # A 404 here is an ANSWER: the team is not attached to the repo at all.
-      warn "team '${TEAM}' is not attached to ${repo} — grant it write access or CODEOWNERS is inert."
+      # A 404 here is an ANSWER: the team is not attached to the repo at all — fold that
+      # into "false" so the grant below fires for it exactly like an explicit non-write.
+      perm=false
     else
       # Anything else (auth, network, rate limit) is NOT an answer. Do not guess.
-      # Written as if/elif/else, not `grep && warn || die`: in the && || form, `die`
-      # also fires whenever `warn` itself returns non-zero (shellcheck SC2015).
       die "cannot check team write access (not a 404 — auth? network? rate limit?): ${perm}"
+    fi
+
+    if [ "${perm}" != "true" ]; then
+      # A warning nobody actions leaves an inert CODEOWNERS — the exact silent-enforcement-
+      # theater failure this file exists to prevent. Grant write instead of just naming the
+      # problem. One PUT both attaches the team to the repo (if it wasn't) and sets push,
+      # so it covers "not attached at all" and "attached with a lesser permission" alike.
+      local grant
+      if grant=$(gh api -X PUT "orgs/${ORG}/teams/${TEAM}/repos/${repo}" -f permission=push 2>&1); then
+        info "granted @${ORG}/${TEAM} write access to ${repo}"
+      elif grep -qE '"status": *"403"|HTTP 403|Forbidden' <<<"${grant}"; then
+        die "cannot grant @${ORG}/${TEAM} write access to ${repo} (403 Forbidden) — you need repo-admin or org-owner rights on ${repo}. CODEOWNERS will be inert until someone with those rights grants the team write."
+      else
+        die "failed to grant @${ORG}/${TEAM} write access to ${repo} (not a 403 — auth? network? rate limit?): ${grant}"
+      fi
+
+      # Do not assume the PUT worked because it returned 0 — re-verify before writing
+      # CODEOWNERS. If it still isn't true, die rather than ship an inert file.
+      if perm=$(gh api -H "Accept: application/vnd.github.v3.repository+json" \
+                  "orgs/${ORG}/teams/${TEAM}/repos/${repo}" -q '.permissions.push' 2>&1); then
+        [ "${perm}" = "true" ] || die "granted write to @${ORG}/${TEAM} on ${repo} but re-verification still shows push=${perm:-unknown} — refusing to write CODEOWNERS"
+      else
+        die "cannot re-verify team write access after granting (not a 404 — auth? network? rate limit?): ${perm}"
+      fi
     fi
   fi
 

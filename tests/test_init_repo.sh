@@ -101,4 +101,82 @@ fi
 assert_match "says HEAD is not dev" "not 'dev'" "$out"
 assert_dir   "died BEFORE mutating the tree (templates/ intact)" templates
 
+# ---------------------------------------------------------------------------------------
+# A team that EXISTS but lacks write access no longer just gets a warning — the script
+# now GRANTS it write, because a warning nobody actions leaves every new repo with an
+# inert CODEOWNERS (GitHub silently ignores an entry for a team without write). Drive
+# both outcomes with a fake `gh` on PATH (pattern from tests/test_apply_rulesets.sh) so
+# no real GitHub call is made.
+echo "init-repo: team exists but lacks write — script grants it"
+STUB_OK="$(mktemp -d)"
+cat > "${STUB_OK}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+# Fake gh: team 'no-write-team' exists, starts without write, grant succeeds.
+STATE="$(dirname "$0")"
+case "$*" in
+  *"-X PUT"*"permission=push"*)
+    touch "${STATE}/.granted"
+    echo '{"permission":"push"}' ;;
+  *".permissions.push"*)
+    if [ -f "${STATE}/.granted" ]; then echo true; else echo false; fi ;;
+  *"orgs/Avenue-Z/teams/no-write-team"*)
+    echo '{"slug":"no-write-team"}' ;;
+  *nameWithOwner*)
+    echo "Avenue-Z/fake-repo" ;;
+  *)
+    echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB_OK}/gh"
+
+cd "${WORK}" && rm -rf repo6 && git clone -q "${REPO_ROOT}" repo6 && cd repo6
+git checkout -qb dev 2>/dev/null || git checkout -q dev
+if out=$(PATH="${STUB_OK}:${PATH}" ./scripts/init-repo.sh python --team no-write-team --no-push 2>&1); then
+  pass "grant-then-write path exits 0"
+else
+  fail "grant-then-write path should exit 0, got non-zero. Output: ${out}"
+fi
+assert_match   "reports it granted write access" 'granted.*no-write-team.*write access' "$out"
+assert_file    "CODEOWNERS written after a successful grant" .github/CODEOWNERS
+assert_no_file "CODEOWNERS.tmpl removed after a successful grant" .github/CODEOWNERS.tmpl
+if [ -f .github/CODEOWNERS ]; then
+  live_ok="$(cat .github/CODEOWNERS)"
+  assert_match   "live CODEOWNERS names the real team" '@Avenue-Z/no-write-team' "$live_ok"
+  assert_nomatch "live CODEOWNERS has no leftover TEAM_SLUG token" 'TEAM_SLUG' "$live_ok"
+fi
+rm -rf "${STUB_OK}"
+
+echo "init-repo: grant FAILS with 403 — must die, not ship an inert CODEOWNERS"
+STUB_403="$(mktemp -d)"
+cat > "${STUB_403}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+# Fake gh: team 'no-write-team' exists, starts without write, grant is 403 Forbidden.
+case "$*" in
+  *"-X PUT"*"permission=push"*)
+    echo '{"message":"Must have admin rights to Repository.","status":"403"}' >&2
+    exit 1 ;;
+  *".permissions.push"*)
+    echo false ;;
+  *"orgs/Avenue-Z/teams/no-write-team"*)
+    echo '{"slug":"no-write-team"}' ;;
+  *nameWithOwner*)
+    echo "Avenue-Z/fake-repo" ;;
+  *)
+    echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB_403}/gh"
+
+cd "${WORK}" && rm -rf repo7 && git clone -q "${REPO_ROOT}" repo7 && cd repo7
+git checkout -qb dev 2>/dev/null || git checkout -q dev
+if out=$(PATH="${STUB_403}:${PATH}" ./scripts/init-repo.sh python --team no-write-team --no-push 2>&1); then
+  fail "grant returning 403 should not exit 0. Output: ${out}"
+else
+  pass "grant returning 403 exits non-zero"
+fi
+assert_match   "explains a human needs repo-admin/org-owner rights to grant" 'repo-admin or org-owner' "$out"
+assert_no_file "no CODEOWNERS written when the grant fails" .github/CODEOWNERS
+assert_file    "CODEOWNERS.tmpl preserved when the grant fails" .github/CODEOWNERS.tmpl
+rm -rf "${STUB_403}"
+
 finish

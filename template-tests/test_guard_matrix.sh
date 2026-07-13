@@ -38,6 +38,23 @@ assert_fail staging dev
 assert_fail wip/x dev
 assert_fail randomname dev
 
+echo "guard-base-branch: the guard's logic must come from the BASE branch, not the PR it judges"
+# The workflow runs on pull_request, so a default checkout gives it the PR HEAD's tree — which
+# means the PR supplies the very script that judges it. A PR from wip/x -> main that also
+# rewrites check-base-branch.sh to `exit 0` would pass its own guard, and with
+# required_approving_review_count: 0 nobody has to look at it. Checking out github.base_ref
+# takes the script from the protected branch instead.
+wf="$(cat "$WORKFLOW")"
+# Anchored, and NOT via assert_match: that helper greps case-insensitively, and the step's own
+# `BASE_REF: ${{ github.base_ref }}` env line matches a loose /ref: .../ pattern — which would
+# make this assertion pass with a default checkout. It must match the checkout's `ref:` input.
+if grep -qE '^ +ref: \$\{\{ *github\.base_ref *\}\}$' "$WORKFLOW"; then
+  pass "actions/checkout takes ref: github.base_ref (guard logic comes from the protected branch)"
+else
+  fail "actions/checkout must set 'ref: \${{ github.base_ref }}' — otherwise the PR supplies the script that judges it"
+fi
+assert_match "declares a read-only permissions block" 'contents: *read' "$wf"
+
 echo "guard-base-branch: job id"
 if grep -A1 '^jobs:' "$WORKFLOW" | tail -1 | grep -q '^  guard-base-branch:$'; then
   pass "jobs key is literally guard-base-branch"

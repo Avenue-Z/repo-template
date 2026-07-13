@@ -5,6 +5,11 @@ on:
   push:
     branches: [dev, staging, main]
 
+# This job builds and tests; it never writes to the repo. Without this block it inherits
+# whatever the repo/org default GITHUB_TOKEN scope happens to be, which is often read-write.
+permissions:
+  contents: read
+
 # WHY TWO JOBS: GitHub names a matrix job's check contexts after its legs —
 # "test (3.11)", "test (3.12)", "test (3.13)". A context named plainly "test"
 # NEVER EXISTS. scripts/apply-rulesets.sh requires the single context "ci", and a

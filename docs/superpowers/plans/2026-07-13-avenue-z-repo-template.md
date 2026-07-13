@@ -527,7 +527,8 @@ jobs:
 
 ```bash
 pre-commit install
-printf 'AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE\n' > /tmp/leak.env
+PROBE="AKIAIOSFODNN7EXAMPL"X   # built at runtime: a literal here would trip our own secret-scan
+printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$PROBE" > /tmp/leak.env
 cp /tmp/leak.env ./leak-test.env && git add -f leak-test.env
 git commit -m "test: should be blocked" || echo "BLOCKED AS EXPECTED"
 ```
@@ -1488,9 +1489,17 @@ Expected: fails with "Unrecognized branch prefix".
 
 This is the guarantee that matters: the hook is skippable, the CI job is not.
 
+**Do not probe with AWS's published example key.** gitleaks' default AWS rule carries an allowlist
+(`regexes = ['.+EXAMPLE$']`) that deliberately exempts any key ending in `EXAMPLE`. Probing with it
+makes `secret-scan` **pass**, and you would wrongly conclude criterion 9 is satisfied while nothing
+was caught. Change the trailing character so the allowlist does not match — the `PROBE=` line below
+assembles the key at runtime, which also keeps a detectable literal out of this document (an earlier
+draft embedded one, and the repo's own gitleaks hook correctly blocked the commit).
+
 ```bash
 git checkout -b fix/leak-probe dev
-printf 'AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE\n' > leak.txt
+PROBE="AKIAIOSFODNN7EXAMPL"X   # built at runtime: a literal here would trip our own secret-scan
+printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$PROBE" > leak.txt
 git add leak.txt && git commit --no-verify -qm "test: planted credential, hook bypassed"
 git push -u origin fix/leak-probe
 gh pr create --base dev --head fix/leak-probe --title "should FAIL secret-scan" --body "planted key"

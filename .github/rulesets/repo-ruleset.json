@@ -4,16 +4,22 @@
   "enforcement": "active",
   "conditions": {
     "ref_name": {
-      "include": ["refs/heads/main", "refs/heads/staging", "refs/heads/dev"],
+      "include": [
+        "refs/heads/main",
+        "refs/heads/staging",
+        "refs/heads/dev"
+      ],
       "exclude": []
     }
   },
-  "bypass_actors": [
-    { "actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always" }
-  ],
+  "bypass_actors": [],
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
     {
       "type": "pull_request",
       "parameters": {
@@ -29,8 +35,12 @@
       "parameters": {
         "strict_required_status_checks_policy": false,
         "required_status_checks": [
-          { "context": "guard-base-branch" },
-          { "context": "secret-scan" }
+          {
+            "context": "guard-base-branch"
+          },
+          {
+            "context": "secret-scan"
+          }
         ]
       }
     }

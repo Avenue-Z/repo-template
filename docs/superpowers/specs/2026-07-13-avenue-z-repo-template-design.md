@@ -99,6 +99,7 @@ trusting the checkbox. This makes the init script load-bearing, not a convenienc
 | Head branch | Allowed base | Anything else |
 |---|---|---|
 | `feat/*`, `fix/*`, `docs/*`, `chore/*`, `ci/*` | `dev` | fail |
+| `dependabot/*` | `dev` | fail |
 | `dev` | `staging` | fail |
 | `staging` | `main` | fail |
 | **any other prefix** | — | **fail closed** |
@@ -107,6 +108,14 @@ Fail-closed on an unmatched prefix is deliberate. The guard is already the weake
 enforcement mechanisms — it cannot stop a direct push — so a pass-through for unrecognized branch
 names would leave it enforcing nothing. A contributor who needs a new prefix adds it to the matrix
 in a PR, which is the point.
+
+**`dependabot/*` is in the matrix because otherwise the template's two features fight each other.**
+Dependabot opens PRs from branches named `dependabot/<ecosystem>/<dep>-<version>` — an unmatched
+prefix, which fail-closed would red-X. A fresh repo with three ecosystems enabled and no baseline can
+open a dozen PRs on day one, and every one of them would fail the guard. A repo that greets its owner
+with a wall of red on day one has not "started life with the conventions already working." So the row
+is added **and** `dependabot.yml` sets `target-branch: dev`, which keeps dependabot inside the same
+`… → dev → staging → main` promotion path as everything else rather than side-loading updates.
 
 ### Secret scanning
 
@@ -288,6 +297,18 @@ because that is the exact silent-failure case.
 only `dev` — no `main`, no `staging` — so a script that fails halfway or is never run leaves the repo
 in a half-configured state.
 
+**Ordering: branch `staging` and `main` from `dev` *after* the init commit.** This is load-bearing and
+was previously unstated. Immediately after "Use this template," `dev` still contains `templates/` — the
+script's own commit is what removes it. So if `staging` and `main` are cut from `dev` *before* that
+commit, all three heads permanently carry `templates/` and the dead stack files the design promises
+zero of, and every future promotion drags that cruft along until someone cleans it by hand. The order
+is therefore fixed:
+
+1. Copy the chosen stack into place; verify the copy.
+2. Remove `templates/`; commit **once**; push `dev`.
+3. **Then** create `staging` and `main` from the *post-cleanup* `dev`, so all three heads share one
+   clean tree.
+
 - **Idempotent branch creation.** Create-if-absent for `staging` and `main` (check `git rev-parse
   --verify`), never force-push.
 - **`set -euo pipefail`,** so a failure stops rather than continuing into a partial config.
@@ -314,16 +335,29 @@ error. Under `set -e`, a bare `gh api ... | jq ...` aborts the script on precise
 was written to handle. Both the team-existence check and the team-write-access check must therefore use
 an explicit guard:
 
+**But the guard must distinguish "absent" from "couldn't tell."** `set -e` is disabled inside an `if`
+condition — which is *why* the guard works, and also its trap: a bare `if ! gh api ...` treats **every**
+non-zero exit as "team not found." A network blip, an expired token, or a rate limit would then
+silently delete `CODEOWNERS.tmpl` and leave the repo with no code-owner review — the exact quiet
+downgrade this section exists to prevent. Honest enforcement means a failure to *verify* is not the
+same as a verified *absence*:
+
 ```bash
-if ! gh api "orgs/Avenue-Z/teams/${team}" >/dev/null 2>&1; then
-  warn "team '${team}' not found — refusing to write CODEOWNERS"
+if out=$(gh api "orgs/Avenue-Z/teams/${team}" 2>&1); then
+  :                                          # team exists → continue to the write-access check
+elif grep -qE '"status": *"404"|HTTP 404' <<<"$out"; then
+  warn "team '${team}' does not exist — dropping CODEOWNERS (no code-owner review)"
   rm -f .github/CODEOWNERS.tmpl
 else
-  ...
+  die "cannot verify team '${team}' (not a 404): ${out}"   # auth/network/rate-limit → STOP
 fi
 ```
 
-Same pattern for any `gh api` call whose failure is a decision, not a fault.
+- **404** → a real answer. Warn, drop the file, continue.
+- **Any other non-zero** → we do not know. **Stop and say why.** Never downgrade silently.
+
+Same pattern for the write-access check, and for any `gh api` call whose failure is a decision rather
+than a fault.
 
 ## New: linting
 
@@ -354,11 +388,24 @@ deliberately. Existing repos are not retrofitted as part of this work.
    and — the guarantee that actually matters — the `secret-scan` CI job fails the PR when the hook is
    bypassed with `--no-verify`.
 10. `git check-ignore .env.example` exits **non-zero** (i.e. the file is trackable) while
-    `git check-ignore .env.local` exits zero. Guards the negation-ordering trap.
+    `git check-ignore .env.local` exits zero. Guards the negation-ordering trap. Note this asserts the
+    **repo-local** rule; a developer's global gitignore or a parent `.gitignore` in a nested checkout
+    could shadow it, and that is out of the template's control.
 11. `init-repo.sh --team <nonexistent>` **warns and exits 0** — it does not abort with a `set -e`
     crash. Proves the `gh api` 404 path is guarded rather than fatal.
-12. The template repo's own ruleset requires only `guard-base-branch` and `secret-scan`; a PR into
-    `main` reaches a mergeable state rather than hanging pending on a `ci` check that does not exist.
+12. **(template repo)** The template's own ruleset requires only `guard-base-branch` and `secret-scan`;
+    a PR into its `main` reaches a mergeable state rather than hanging pending on a `ci` check that does
+    not exist. *This can only be tested on the template, which by definition never has `ci` — hence #13.*
+13. **(generated repo — the case #12 structurally cannot cover)** After `init-repo.sh python`, a PR into
+    the **generated** repo's `main` reaches mergeable **and the `ci` check reports a result rather than
+    hanging pending**. This is the one that proves the required-check name `init-repo.sh` adds actually
+    matches the **job name** inside the copied `ci.yml`. Without it, the hang-pending trap is merely
+    relocated from the template — where it cannot occur — into every repo the template produces, and
+    template testing would never reveal it. Repeat for `node`.
+14. `dependabot/*` PRs pass `guard-base-branch` and target `dev`. A fresh repo does not greet its owner
+    with a wall of failing dependabot PRs.
+15. On all three of `dev`, `staging`, `main` in a generated repo, `test -d templates` fails — the
+    post-cleanup branch-lineage ordering held, and no head carries dead stack files.
 
 ## Out of scope
 
@@ -407,6 +454,31 @@ Second review round. All six items accepted; two were blocking and are now resol
 - **Unverified item promoted to a Team-path blocker.** Whether a repo-level bypass actor survives an
   org-level ruleset determines whether the emergency-bypass design works at all. It blocks validation of
   the Team path, not merely the wording of `CONTRIBUTING.md`.
+
+## Review log — 2026-07-13 (round 3 — approved)
+
+Approved for planning and build. Four items folded in; the rest were notes for the build engineer.
+
+- **`dependabot/*` vs. fail-closed — the two features were fighting.** Dependabot branches
+  (`dependabot/<ecosystem>/<dep>`) are an unmatched prefix, so the guard would have red-X'd every one of
+  them, and a fresh repo with three ecosystems can open a dozen PRs on day one. Added the
+  `dependabot/*` → `dev` row **and** `target-branch: dev` in `dependabot.yml`. A template whose first
+  impression is a wall of red has not "started life with the conventions working." New criterion #14.
+- **Branch lineage pinned to *post-cleanup* `dev`.** Previously unstated: `dev` still contains
+  `templates/` until the script's own commit removes it, so cutting `staging`/`main` before that commit
+  would leave all three heads permanently carrying the dead files the design promises zero of. Order is
+  now fixed — copy, verify, remove, commit, push `dev`, *then* branch. New criterion #15.
+- **The required-check-name invariant is now tested where it can actually fail.** #12 only exercises the
+  template repo, which by construction never has `ci` — so it proves the trap is avoided in the one place
+  it cannot occur. New criterion #13 tests a **generated** repo: the `ci` check must *report*, not hang
+  pending, proving the name `init-repo.sh` adds matches the job name in the copied `ci.yml`.
+- **`gh api` guard now separates "absent" from "couldn't tell."** `set -e` is disabled inside an `if`
+  condition, so a bare `if ! gh api` treats an expired token or a network blip identically to a 404 and
+  would silently drop `CODEOWNERS`. Now: 404 → warn and drop; any other non-zero → **stop and say why**.
+  A failure to verify is not a verified absence.
+
+Noted, not changed: #5 and #12 overlap but test different repos and both stay; the `check-ignore` test
+asserts the repo-local rule only, which a global gitignore could shadow.
 
 ### Open, blocking the Team-upgrade path only
 

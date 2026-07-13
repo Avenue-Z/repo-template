@@ -11,6 +11,16 @@ assert_eq() { # <expected> <actual> <msg>
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (expected '$1', got '$2')"; fi
 }
 
+# `A && pass "x" || fail "y"` is NOT if-then-else (shellcheck SC2015): `fail` also runs
+# whenever `pass` itself returns non-zero. The assertions below are the honest form.
+assert_match()   { if grep -qiE -- "$2" <<<"$3"; then pass "$1"; else fail "$1"; fi; }  # <msg> <regex> <text>
+assert_nomatch() { if grep -qiE -- "$2" <<<"$3"; then fail "$1"; else pass "$1"; fi; }  # <msg> <regex> <text>
+assert_file()    { if [ -f "$2" ]; then pass "$1"; else fail "$1"; fi; }                # <msg> <path>
+assert_no_file() { if [ -f "$2" ]; then fail "$1"; else pass "$1"; fi; }                # <msg> <path>
+assert_dir()     { if [ -d "$2" ]; then pass "$1"; else fail "$1"; fi; }                # <msg> <path>
+assert_no_dir()  { if [ -d "$2" ]; then fail "$1"; else pass "$1"; fi; }                # <msg> <path>
+assert_ok()      { local m="$1"; shift; if "$@"; then pass "$m"; else fail "$m"; fi; }  # <msg> <cmd...>
+
 # git check-ignore exits 0 when the path IS ignored, 1 when it is not.
 # --no-index is required: without it, git check-ignore consults the index,
 # and a TRACKED file (e.g. .env.example) is always reported "not ignored"

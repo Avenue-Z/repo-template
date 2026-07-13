@@ -5,8 +5,14 @@ on:
   push:
     branches: [dev, staging, main]
 
+# WHY TWO JOBS: GitHub names a matrix job's check contexts after its legs —
+# "test (3.11)", "test (3.12)", "test (3.13)". A context named plainly "test"
+# NEVER EXISTS. scripts/apply-rulesets.sh requires the single context "ci", and a
+# required check that never reports does not fail a PR — it hangs PENDING FOREVER
+# and nothing can be merged. So the matrix lives in `test`, and `ci` is a
+# non-matrix aggregate whose name is the stable context rulesets can require.
 jobs:
-  ci:
+  test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -21,3 +27,20 @@ jobs:
       - run: ruff check .
       - run: mypy
       - run: pytest -q
+
+  ci:
+    # `if: always()` is load-bearing. Without it this job is SKIPPED when the matrix
+    # fails, and a skipped required check never reports either — it blocks the merge
+    # just as silently as a missing one. Always run; fail loudly on a bad matrix.
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on the matrix result
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::the 'test' matrix did not succeed (result: ${{ needs.test.result }})"
+            exit 1
+          fi
+          echo "all matrix legs passed"

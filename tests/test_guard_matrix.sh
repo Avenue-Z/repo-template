@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# shellcheck source=lib.sh
+# shellcheck source=tests/lib.sh disable=SC1091
 source tests/lib.sh
 
 WORKFLOW=.github/workflows/guard-base-branch.yml

@@ -2,17 +2,22 @@
 #
 # Apply branch protection where the GitHub plan allows it, and say plainly where it does not.
 #
-#   ./scripts/apply-rulesets.sh [--org] [--dry-run]
+#   ./scripts/apply-rulesets.sh [--org [--yes]] [--dry-run]
 #
 # Branch protection and rulesets are UNAVAILABLE on private repos on the Free plan — for
 # everyone, including org owners. Org-level rulesets additionally require Team. This script
 # never pretends otherwise: if it cannot protect a branch, it says so and exits 0.
+#
+# --org applies org-ruleset.json to EVERY repo in the org (~64 of them, almost none generated
+# from this template). It is the highest-blast-radius thing in this repo, so it does not fire
+# blind: it lists the repos it would hit and demands --yes (or an interactive y) first.
 #
 set -euo pipefail
 
 ORG="Avenue-Z"
 DO_ORG=0
 DRY=0
+ASSUME_YES=0
 
 warn() { printf '\033[33mSKIP\033[0m  %s\n' "$*"; }
 info() { printf '\033[32m--\033[0m    %s\n' "$*"; }
@@ -22,6 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --org)     DO_ORG=1; shift ;;
     --dry-run) DRY=1; shift ;;
+    --yes|-y)  ASSUME_YES=1; shift ;;
     *)         die "unknown flag '$1'" ;;
   esac
 done
@@ -55,8 +61,46 @@ if [ "${DO_ORG}" -eq 1 ]; then
     exit 0
   fi
 
-  ORG_PAYLOAD=".github/rulesets/org-ruleset.json"
-  ORG_NAME="$(jq -r '.name' "${ORG_PAYLOAD}")"
+  ORG_SRC=".github/rulesets/org-ruleset.json"
+  ORG_NAME="$(jq -r '.name' "${ORG_SRC}")"
+
+  # `_comment` is documentation for humans, not a GitHub API field. Strip it before sending.
+  ORG_PAYLOAD="$(mktemp)"; trap 'rm -f "${ORG_PAYLOAD}"' EXIT
+  jq 'del(._comment)' "${ORG_SRC}" > "${ORG_PAYLOAD}"
+
+  # ------------------------------------------------------------- blast radius, stated first
+  # This ruleset targets ~ALL repositories. Almost none of them came from this template. An
+  # operator who has not internalized that is one keystroke from taking push and merge away
+  # from the whole org, so SHOW the list and SAY what could go wrong before doing anything.
+  if ! ORG_REPOS="$(gh api "orgs/${ORG}/repos" --paginate -q '.[].name' 2>&1)"; then
+    die "cannot list the repos in ${ORG} (auth? network? rate limit?): ${ORG_REPOS}
+       Refusing to continue: --org applies a ruleset to EVERY repo in the org, and this
+       script will not do that without first showing you which repos those are."
+  fi
+  ORG_REPO_COUNT="$(printf '%s\n' "${ORG_REPOS}" | grep -c . || true)"
+
+  printf '\n'
+  info "--org applies '${ORG_NAME}' to EVERY repository in ${ORG} — ${ORG_REPO_COUNT} of them:"
+  printf '%s\n' "${ORG_REPOS}" | sed 's/^/        /'
+  printf '\n'
+  warn "Read this before you answer:"
+  warn "  * Every repo above gets enforcement=active with NO bypass actors — not even an org"
+  warn "    owner can push directly to main, staging or dev afterwards. Everything goes via a PR."
+  warn "  * A required status check that a repo has NO WORKFLOW FOR does not fail its PRs — it"
+  warn "    hangs them PENDING FOREVER, and the repo becomes permanently UNMERGEABLE. That is"
+  warn "    why org-ruleset.json ships NO required_status_checks: most repos in ${ORG} have"
+  warn "    neither guard-base-branch nor secret-scan, and requiring them org-wide would brick"
+  warn "    every one of those repos at once. If you re-add required checks to that file, you"
+  warn "    are choosing that outcome for all ${ORG_REPO_COUNT} repos listed above."
+  ORG_HAS_CHECKS="$(jq -r '[.rules[] | select(.type=="required_status_checks")] | length' "${ORG_PAYLOAD}")"
+  if [ "${ORG_HAS_CHECKS}" != "0" ]; then
+    warn "  * !! org-ruleset.json DOES declare required status checks:"
+    jq -r '.rules[] | select(.type=="required_status_checks")
+           | .parameters.required_status_checks[].context' "${ORG_PAYLOAD}" | sed 's/^/          required: /'
+    warn "    Any repo above without a job of that exact name becomes UNMERGEABLE the moment"
+    warn "    this is applied. Do not proceed unless you have verified every repo has them."
+  fi
+  printf '\n'
 
   # GitHub allows multiple rulesets with the same name — a plain POST every run would create
   # a duplicate instead of updating the one already in force. Look up an existing ruleset by
@@ -72,11 +116,30 @@ if [ "${DO_ORG}" -eq 1 ]; then
 
   if [ "${DRY}" -eq 1 ]; then
     if [ -n "${ORG_EXISTING_ID}" ]; then
-      info "[dry-run] would PUT orgs/${ORG}/rulesets/${ORG_EXISTING_ID} (update existing '${ORG_NAME}') from ${ORG_PAYLOAD}"
+      info "[dry-run] would PUT orgs/${ORG}/rulesets/${ORG_EXISTING_ID} (update existing '${ORG_NAME}') from ${ORG_SRC}"
     else
-      info "[dry-run] would POST orgs/${ORG}/rulesets (create new '${ORG_NAME}') from ${ORG_PAYLOAD}"
+      info "[dry-run] would POST orgs/${ORG}/rulesets (create new '${ORG_NAME}') from ${ORG_SRC}"
     fi
+    info "[dry-run] nothing was applied. Re-run without --dry-run (and with --yes) to apply."
     exit 0
+  fi
+
+  # ------------------------------------------------------------------------- confirmation
+  # Not a formality. This is the one call in the repo that changes every repository in the
+  # org at once, so it requires an affirmative act: --yes, or a typed 'y'. In a
+  # non-interactive shell with no --yes, REFUSE — never assume consent from silence.
+  if [ "${ASSUME_YES}" -ne 1 ]; then
+    if [ ! -t 0 ]; then
+      die "--org would apply '${ORG_NAME}' to all ${ORG_REPO_COUNT} repos listed above, and stdin
+       is not a terminal so you cannot be asked. Re-run with --yes if that is what you want,
+       or with --dry-run to see the plan without applying it."
+    fi
+    printf 'Apply "%s" to all %s repos in %s? [y/N] ' "${ORG_NAME}" "${ORG_REPO_COUNT}" "${ORG}"
+    read -r reply
+    case "${reply}" in
+      y|Y|yes|YES) ;;
+      *) info "aborted — nothing was applied."; exit 0 ;;
+    esac
   fi
 
   if [ -n "${ORG_EXISTING_ID}" ]; then

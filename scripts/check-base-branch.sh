@@ -21,7 +21,7 @@ case "$head_ref" in
   *)
     echo "::error::Unrecognized branch prefix '${head_ref}'. This guard FAILS CLOSED."
     echo "Allowed: feat/ fix/ docs/ chore/ ci/ dependabot/ — or dev, staging."
-    echo "Need a new prefix? Add it to the matrix in .github/workflows/guard-base-branch.yml."
+    echo "Need a new prefix? Add it to the case statement in scripts/check-base-branch.sh (and to the matrix in CONTRIBUTING.md)."
     exit 1
     ;;
 esac

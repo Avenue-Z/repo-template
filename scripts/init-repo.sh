@@ -11,6 +11,15 @@
 #   Granting requires repo-admin or org-owner rights; if that fails the script dies rather
 #   than write a CODEOWNERS that GitHub will ignore.
 #
+#   THIS IS A REAL PERMISSION CHANGE ON GITHUB. `--team` may add the team to the repo with
+#   push access (PUT orgs/<org>/teams/<slug>/repos/<owner>/<repo>). It is documented here, in
+#   README.md and in CONTRIBUTING.md. Omit --team and the script touches no permissions.
+#
+#   If this working copy has no GitHub remote yet, there is no repo to check write access
+#   against: the file is still written, but the script warns LOUDLY that it may be inert.
+#   Any OTHER failure to identify the repo (auth, network, rate limit) is fatal — a failure
+#   to verify is never treated as a verified pass.
+#
 set -euo pipefail
 
 ORG="Avenue-Z"
@@ -91,9 +100,39 @@ resolve_codeowners() {
   # "no WRITE access" for every team on earth, including the ones that have it. The
   # documented media type below returns a real JSON body: {"permissions":{"push":true,...},
   # "role_name":"write",...}. A check that cannot say yes is not a check.
-  local repo perm
-  repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo '')"
+  #
+  # `gh repo view` has THREE outcomes and they are not interchangeable. The old code collapsed
+  # them all into repo="" and then fell through and wrote CODEOWNERS anyway — so an expired
+  # token or a network blip SKIPPED the write-access check entirely and shipped a CODEOWNERS
+  # that GitHub may silently ignore. That is precisely the inert enforcement-theater file this
+  # whole feature exists to prevent, and it fired on every run without a GitHub remote.
+  #
+  #   success            -> verify write access (and grant it) below.
+  #   no GitHub remote   -> an ANSWER: there is no repo to check against yet. Write the file,
+  #                         but say LOUDLY that write access is UNVERIFIED and the file may be
+  #                         inert until someone checks. (Typical when init runs before the
+  #                         first push.)
+  #   any other failure  -> NOT an answer. Auth, network, rate limit. die.
+  local repo perm repo_err
+  local verified=0 unverified_reason=""
+  if repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>&1)"; then
+    :   # got the repo — fall through to the write-access check
+  else
+    repo_err="${repo}"
+    repo=""
+    if grep -qiE 'none of the git remotes|no git remotes|no remote|not a git repository|could not determine' <<<"${repo_err}"; then
+      unverified_reason="this working copy has no GitHub remote yet"
+    else
+      die "cannot determine the target repo, and so cannot verify that @${ORG}/${TEAM} has write
+       access to it (not a missing-remote — auth? network? rate limit?): ${repo_err}
+       Refusing to guess: GitHub SILENTLY IGNORES a CODEOWNERS entry for a team without write
+       access, so writing the file unverified would ship exactly the inert file this script
+       exists to prevent. Fix the cause (gh auth status) and re-run."
+    fi
+  fi
+
   if [ -n "${repo}" ]; then
+    verified=1
     if perm=$(gh api -H "Accept: application/vnd.github.v3.repository+json" \
                 "orgs/${ORG}/teams/${TEAM}/repos/${repo}" -q '.permissions.push' 2>&1); then
       :   # got a real answer, true or false
@@ -133,14 +172,47 @@ resolve_codeowners() {
 
   # Write the LIVE file — without the template's "TEMPLATE — not live" preamble, which
   # would otherwise sit as the first line of the file that IS live, contradicting itself.
+  # The header states honestly WHAT WAS ACTUALLY VERIFIED, which is not the same in both paths.
   {
-    printf '# Code owners. Written by scripts/init-repo.sh after verifying that\n'
-    printf '# @%s/%s exists in the org.\n' "${ORG}" "${TEAM}"
+    if [ "${verified}" -eq 1 ]; then
+      printf '# Code owners. Written by scripts/init-repo.sh after verifying that @%s/%s\n' "${ORG}" "${TEAM}"
+      printf '# exists in the org AND holds write access to this repo.\n'
+    else
+      printf '# Code owners. Written by scripts/init-repo.sh, which verified that @%s/%s\n' "${ORG}" "${TEAM}"
+      printf '# EXISTS in the org but could NOT verify it has write access to this repo\n'
+      printf '# (%s).\n' "${unverified_reason}"
+      printf '#\n'
+      printf '# GitHub SILENTLY IGNORES a CODEOWNERS entry for a team without write access.\n'
+      printf '# Until someone confirms @%s/%s has write here, this file may enforce NOTHING.\n' "${ORG}" "${TEAM}"
+      printf '# Verify:  gh api orgs/%s/teams/%s/repos/<owner>/<repo> \\\n' "${ORG}" "${TEAM}"
+      printf '#            -H "Accept: application/vnd.github.v3.repository+json" -q .permissions.push\n'
+      printf '# Grant:   gh api -X PUT orgs/%s/teams/%s/repos/<owner>/<repo> -f permission=push\n' "${ORG}" "${TEAM}"
+    fi
     sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
         -e "s|@${ORG}/TEAM_SLUG|@${ORG}/${TEAM}|" .github/CODEOWNERS.tmpl
   } > .github/CODEOWNERS
   rm -f .github/CODEOWNERS.tmpl
-  info "wrote .github/CODEOWNERS for @${ORG}/${TEAM}"
+
+  if [ "${verified}" -eq 1 ]; then
+    info "wrote .github/CODEOWNERS for @${ORG}/${TEAM} (write access verified on ${repo})"
+  else
+    warn ""
+    warn "############################################################################"
+    warn "# CODEOWNERS WRITTEN WITH UNVERIFIED WRITE ACCESS                          #"
+    warn "############################################################################"
+    warn "# ${unverified_reason}, so this script could NOT check"
+    warn "# whether @${ORG}/${TEAM} has write access to this repo."
+    warn "#"
+    warn "# GitHub SILENTLY IGNORES a CODEOWNERS entry naming a team without write"
+    warn "# access. No error, no warning — the file just enforces nothing."
+    warn "#"
+    warn "# .github/CODEOWNERS MAY BE INERT until you verify it. Re-running this script"
+    warn "# will NOT fix it (a re-run repairs absence, not this). Once the repo is on"
+    warn "# GitHub, check and if needed grant, by hand:"
+    warn "#   gh api -X PUT orgs/${ORG}/teams/${TEAM}/repos/<owner>/<repo> -f permission=push"
+    warn "############################################################################"
+    warn ""
+  fi
 }
 
 # -------------------------------------------------------------- branch lineage
@@ -217,11 +289,31 @@ EOF
 }
 add_dependabot_ecosystem
 
-# Remove templates/ ONLY. init-repo.sh does NOT delete itself: criterion 7 requires a re-run
-# to be a no-op exiting 0, and a self-deleting script cannot be re-run. The re-run IS the
-# recovery path for a first run that died partway. scripts/ keeps apply-rulesets.sh regardless.
-rm -rf templates
-info "removed templates/"
+# Strip everything that is ABOUT the template rather than part of the generated repo. The
+# spec promises a generated repo carries ZERO dead files.
+#
+#   templates/       — the unselected stack (and the selected one, now copied into place)
+#   template-tests/  — the template's OWN bash suite. It must NOT ship: it tests the
+#                      template's premises, two of which INVERT the moment ci.yml exists
+#                      (test_rulesets.sh / test_apply_rulesets.sh assert "the core has no
+#                      ci.yml"), so a generated repo would ship two tests that FAIL out of
+#                      the box. It lives in template-tests/ — not tests/ — precisely so this
+#                      one `rm -rf` removes it wholesale without touching the stack's own
+#                      tests/ skeleton, which we just copied in.
+#   the template's own spec/plan — 500 lines about repo-template itself, meaningless in a
+#                      generated repo. The empty docs/superpowers/{specs,plans}/ dirs and
+#                      their README + .gitkeep stay: that is where the new repo's OWN
+#                      specs and plans go.
+#
+# init-repo.sh does NOT delete itself: criterion 7 requires a re-run to be a no-op exiting 0,
+# and a self-deleting script cannot be re-run. The re-run IS the recovery path for a first run
+# that died partway. scripts/ keeps apply-rulesets.sh regardless.
+rm -rf templates template-tests
+info "removed templates/ and template-tests/ (the template's own self-tests)"
+
+rm -f docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md \
+      docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md
+info "removed the template's own spec and plan"
 
 git add -A
 git commit -q -m "chore: initialize ${STACK} repo from Avenue-Z/repo-template"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# shellcheck source=tests/lib.sh disable=SC1091
-source tests/lib.sh
+# shellcheck source=template-tests/lib.sh disable=SC1091
+source template-tests/lib.sh
 
 echo "gitignore: env block ordering"
 

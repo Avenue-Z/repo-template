@@ -25,6 +25,46 @@ for f in "$REPO_RULESET" "$ORG_RULESET"; do
 done
 
 # ---------------------------------------------------------------------------------------
+# REVIEW ENFORCEMENT MUST BE INTERNALLY CONSISTENT — AND MUST MATCH WHAT SECURITY.md CLAIMS.
+#
+# `require_code_owner_review: true` with `required_approving_review_count: 0` is the trap: it
+# READS like enforced code-owner review while requiring no approval at all. That mismatch is how
+# SECURITY.md came to claim CODEOWNERS "forces a human to review a change to the guard" when the
+# shipped config forced nothing — the exact enforcement theater this repo exists to avoid.
+#
+# So the two flags move TOGETHER, or the suite fails:
+#   count 0   + code-owner review off  -> review is NOT enforced. The current, deliberate choice
+#                                         (solo maintainer). SECURITY.md documents it as an
+#                                         ACCEPTED RISK, and must keep saying so.
+#   count >=1 + code-owner review on   -> review IS enforced. Legitimate, but it means every PR
+#                                         needs a second human. If you switch to this, REWRITE the
+#                                         SECURITY.md section — it currently tells the reader they
+#                                         are NOT protected.
+echo "rulesets: review enforcement must be internally consistent (no 'looks enforced, isn't' config)"
+for f in "$REPO_RULESET" "$ORG_RULESET"; do
+  count=$(jq -r '.rules[] | select(.type=="pull_request") | .parameters.required_approving_review_count' "$f")
+  owner=$(jq -r '.rules[] | select(.type=="pull_request") | .parameters.require_code_owner_review' "$f")
+  if [ "$count" = "0" ] && [ "$owner" = "false" ]; then
+    pass "$f: review not enforced, and does not pretend to be (count 0, code-owner review off)"
+  elif [ "$count" -ge 1 ] 2>/dev/null && [ "$owner" = "true" ]; then
+    pass "$f: review genuinely enforced (count $count, code-owner review on)"
+  else
+    fail "$f: count=$count with require_code_owner_review=$owner is enforcement theater — code-owner review with 0 required approvals requires nobody. Set both or neither, and update SECURITY.md to match."
+  fi
+done
+
+# SECURITY.md must not go back to claiming CODEOWNERS is a control while the ruleset says it is
+# not. This is a doc assertion because the lie lived in the doc, not in the JSON.
+echo "rulesets: SECURITY.md must state honestly that review is not enforced"
+repo_owner=$(jq -r '.rules[] | select(.type=="pull_request") | .parameters.require_code_owner_review' "$REPO_RULESET")
+repo_count=$(jq -r '.rules[] | select(.type=="pull_request") | .parameters.required_approving_review_count' "$REPO_RULESET")
+sec="$(cat SECURITY.md)"
+if [ "$repo_owner" = "false" ] && [ "$repo_count" = "0" ]; then
+  assert_match "SECURITY.md says CODEOWNERS forces nothing" 'CODEOWNERS.{0,20}forces nothing' "$sec"
+  assert_nomatch "SECURITY.md does not claim CODEOWNERS forces a review" 'is the thing that forces a human to review' "$sec"
+fi
+
+# ---------------------------------------------------------------------------------------
 # THE ORG RULESET MUST NOT REQUIRE STATUS CHECKS. It targets repository_name ~ALL — every
 # repo in Avenue-Z, ~64 of them, of which none was generated from this template and none has
 # guard-base-branch.yml or secret-scan.yml. A required check that never reports does not fail

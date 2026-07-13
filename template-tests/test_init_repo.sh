@@ -263,4 +263,47 @@ assert_no_file "no CODEOWNERS written when the grant fails" .github/CODEOWNERS
 assert_file    "CODEOWNERS.tmpl preserved when the grant fails" .github/CODEOWNERS.tmpl
 rm -rf "${STUB_403}"
 
+# ---------------------------------------------------------------------------------------
+# THE "USE THIS TEMPLATE" FIRST RUN — main must NOT be left holding the uninitialized template.
+#
+# GitHub's "Use this template" hands you a repo whose ONLY branch is main. The documented next
+# step is `git checkout -b dev`, so on a FIRST run a local `main` ALWAYS exists, exactly one
+# commit behind dev. ensure_branches used to see "the branch exists" and leave it alone as drift
+# — which left main, the PRODUCTION branch and GitHub's default, pointing at the RAW TEMPLATE:
+# templates/, template-tests/ and the template's own spec and plan all still on it, while the
+# script cheerfully printed "Done."
+#
+# None of the clones above can catch this. `git clone` gives them exactly one local branch, so
+# ensure_branches takes the create-from-scratch path and main comes out right by accident. This
+# test builds the single-branch layout by hand, because that is the one real users are handed.
+echo "init-repo: first run from a 'Use this template' copy (local main pre-exists, behind dev)"
+cd "${WORK}" && rm -rf repo8 && git clone -q "${REPO_ROOT}" repo8 && cd repo8
+git checkout -qB main                       # main: the only branch a template copy has
+git checkout -qb dev                        # the documented next step
+./scripts/init-repo.sh python --no-push >/dev/null 2>&1
+
+if git ls-tree -r --name-only main | grep -qE '^templates/|^template-tests/'; then
+  fail "main STILL carries the uninitialized template — the production branch was left behind"
+else
+  pass "main was fast-forwarded past the cleanup commit (no templates/, no template-tests/)"
+fi
+assert_eq "$(git rev-parse dev)" "$(git rev-parse main)"    "main is at dev after a first run"
+assert_eq "$(git rev-parse dev)" "$(git rev-parse staging)" "staging is at dev after a first run"
+
+# The other half: fast-forward is safe ONLY because the branch is an ancestor. A branch that has
+# genuinely DIVERGED carries commits dev does not, and moving it would silently drop them. That
+# one must still be left alone — "re-run repairs absence, not drift" is right for real drift.
+echo "init-repo: a DIVERGED branch is left alone (fast-forward must not become a force-push)"
+git checkout -q main
+echo "a real commit that only main has" > main-only.txt
+git add main-only.txt && git commit -q -m "chore: a commit that exists only on main"
+diverged_sha="$(git rev-parse main)"
+git checkout -q dev
+echo "some later dev work" > dev-only.txt
+git add dev-only.txt && git commit -q -m "chore: later dev work"
+out=$(./scripts/init-repo.sh python --no-push 2>&1)
+assert_eq "${diverged_sha}" "$(git rev-parse main)" "diverged main was NOT moved (its commit survives)"
+assert_match "says main has diverged" 'DIVERGED' "$out"
+assert_match "tells you to reconcile with a PR" 'Reconcile it by opening a PR' "$out"
+
 finish

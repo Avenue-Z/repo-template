@@ -42,10 +42,11 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
   lacks write access to this repo, the script **grants it push (write) access**
   (`PUT orgs/Avenue-Z/teams/<slug>/repos/<owner>/<repo>`) before writing `.github/CODEOWNERS`.
   It does this rather than merely warning, because GitHub *silently ignores* a CODEOWNERS entry
-  naming a team without write access — a warning nobody actions leaves an inert file that looks
-  like enforced review and enforces nothing. Granting needs repo-admin or org-owner rights; if
-  it fails, the script refuses to write CODEOWNERS at all. Omit `--team` and no permissions are
-  touched.
+  naming a team without write access — a warning nobody actions leaves a file that does not even
+  route a reviewer. Granting needs repo-admin or org-owner rights; if it fails, the script refuses
+  to write CODEOWNERS at all. Omit `--team` and no permissions are touched.
+  **CODEOWNERS routes reviewers; it does not require their approval** — the ruleset ships
+  `required_approving_review_count: 0`. See `SECURITY.md` before relying on it as a control.
 - `scripts/apply-rulesets.sh [--org [--yes]] [--dry-run]` — applies branch protection where the
   plan allows and prints what it skipped. `--org` targets **every repo in the org**; it lists
   them and requires an explicit confirmation first.

@@ -26,7 +26,25 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-PLAN="$(gh api "orgs/${ORG}" -q .plan.name 2>/dev/null || echo unknown)"
+# jq is a hard dependency (the payload is built with it). Without this check, `set -e`
+# just aborts on the first jq call with no output at all and no hint why.
+command -v jq >/dev/null 2>&1 || die "jq is required but not installed. Install it: brew install jq"
+command -v gh >/dev/null 2>&1 || die "gh is required but not installed. Install it: brew install gh"
+
+# EVERY plan-gated decision below hangs off this value, so a failure to GET it must not be
+# laundered into a value. The old `|| echo unknown` did exactly that: auth expiry, a network
+# blip or a rate limit all became "unknown", which is != "free", which SKIPS the honesty
+# branch and walks straight into the POST. "I could not ask" is not "not on Free".
+if ! PLAN="$(gh api "orgs/${ORG}" -q .plan.name 2>&1)"; then
+  die "cannot determine the ${ORG} plan (auth? network? rate limit?): ${PLAN}
+       Refusing to continue: every decision below depends on the plan, and guessing it
+       wrong means either a false claim of protection or a bricked repo. Fix the cause
+       (gh auth status) and re-run."
+fi
+[ -n "${PLAN}" ] && [ "${PLAN}" != "null" ] \
+  || die "the ${ORG} plan came back empty — the token likely cannot read org details.
+       Refusing to continue rather than assume you are not on Free.
+       Try: gh auth refresh -h github.com -s read:org"
 info "org plan: ${PLAN}"
 
 # ------------------------------------------------------------------ org ruleset

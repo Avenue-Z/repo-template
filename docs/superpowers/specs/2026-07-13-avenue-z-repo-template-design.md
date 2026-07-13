@@ -88,11 +88,33 @@ trusting the checkbox. This makes the init script load-bearing, not a convenienc
 
 | Layer | Enforces | Limit |
 |---|---|---|
-| `.github/workflows/guard-base-branch.yml` | The full base-branch matrix (below) | Cannot stop a direct `git push origin main` |
+| `.github/workflows/guard-base-branch.yml` | The full base-branch matrix (below) | Cannot stop a direct `git push origin main`. **And a PR that edits the workflow file itself can pass its own guard** — see below |
 | `.pre-commit-config.yaml` + `secret-scan` CI job | gitleaks — no credential reaches a commit or a PR | Hook is local; the CI job is the enforced one |
 | `CONTRIBUTING.md` + `CLAUDE.md` Workflow Rules | The flow, commit conventions, the `git fetch --all --prune` + `git log origin/dev..HEAD` sync check | Convention only |
-| `.github/rulesets/repo-ruleset.json` | Per-repo protection | Needs a public repo, or Team |
-| `.github/rulesets/org-ruleset.json` | The real thing, org-wide, inherited by every repo | Needs Team |
+| `.github/rulesets/repo-ruleset.json` | Per-repo protection, incl. required checks | Needs a public repo, or Team |
+| `.github/rulesets/org-ruleset.json` | Org-wide, inherited by every repo: no deletion, no force-push, PR required | Needs Team. **Carries no required status checks** — see below |
+
+**The guard is not fully self-protecting, and this doc will not pretend it is.** `guard-base-branch`
+runs on `pull_request`, and Actions reads the workflow file **from the PR's head**. The workflow
+therefore checks out `github.base_ref` to fetch `scripts/check-base-branch.sh`, so a PR cannot
+supply the decision logic that judges it — a PR from `wip/x` → `main` that rewrites
+`check-base-branch.sh` to `exit 0` no longer passes. But a PR that rewrites
+`.github/workflows/guard-base-branch.yml` **itself** still can, and with
+`required_approving_review_count: 0` nobody is forced to look. That residual hole is closed by
+review, not by CI: **`.github/` must be code-owned**, which is what makes `--team` load-bearing.
+
+**The org ruleset must NOT require status checks.** It targets `repository_name: ~ALL` — every repo
+in Avenue-Z, ~64 of them, none generated from this template and none carrying
+`guard-base-branch.yml` or `secret-scan.yml`. A required check that never reports does not fail a
+PR; it hangs it **pending forever**. With `enforcement: active` and `bypass_actors: []`, a single
+`apply-rulesets.sh --org` on Team-upgrade day would take direct push **and** merge away from every
+repo in the org at once — while the script printed success. It would also contradict this spec's own
+"out of scope: retrofitting the six reference repos (or the other 54)". So `org-ruleset.json` ships
+only what is safe on a repo with **no CI at all** — `deletion`, `non_fast_forward`, and
+`pull_request` with `required_approving_review_count: 0` — and required checks stay in
+`repo-ruleset.json`, applied per repo, to repos that actually have the workflows. `--org` additionally
+lists every repo it would touch and requires an explicit `--yes`. A test asserts `org-ruleset.json`
+declares zero `required_status_checks` rules.
 
 ### Base-branch matrix (`guard-base-branch.yml`)
 
@@ -175,9 +197,18 @@ and the template must dodge both:
    | `secret-scan` | gitleaks CI job | yes |
    | `ci` | `templates/{python,node}/.github/workflows/ci.yml` | **no — added post-init only** |
 
-   `init-repo.sh` adds `ci` to the generated repo's required-checks list **after** it has copied
-   `ci.yml` into place — never before. The check names in the ruleset must match the **job** names in
-   the workflow files exactly, or they will hang pending under a different alias.
+   **`ci` is added by `scripts/apply-rulesets.sh`, not by `init-repo.sh`.** (An earlier draft of this
+   spec said the init script does it; it does not, and never did.) `apply-rulesets.sh` adds
+   `{"context":"ci"}` to the required-checks payload **if and only if `.github/workflows/ci.yml`
+   exists in the working copy** — which is true in a generated repo, and false in the template core.
+   The decision is therefore made at apply time, by the human running the script, against the tree in
+   front of it. `init-repo.sh` copies `ci.yml` into place and prints `apply-rulesets.sh` as the next
+   step; the required check appears only once someone runs it.
+
+   The check names in the ruleset must match the **job** names in the workflow files exactly, or they
+   will hang pending under a different alias. `templates/python/ci.yml` runs its matrix in a job
+   called `test` and adds a non-matrix aggregate job named `ci` for exactly this reason — GitHub
+   names a matrix job's contexts `test (3.11)`, so a context named plainly `test` never reports.
 
 **No bypass actors. Verified live, 2026-07-13.** The design originally listed the org-admin role as a
 `bypass_actor` (`bypass_mode: always`) "for emergencies." Applied to the live repo, a direct
@@ -195,10 +226,19 @@ The template core is **stack-agnostic**. The org is genuinely two-stack (Python:
 `aivx-reports`), so language-specific files live in `templates/` and are copied into place by the
 init script, which then deletes `templates/`. A generated repo therefore carries **zero dead files**.
 
+**"Zero dead files" includes the template's tests and the template's own spec/plan.** These are
+about `repo-template`, not about the repo you generated, and two of the tests actively *fail* in a
+generated repo — `test_rulesets.sh` and `test_apply_rulesets.sh` both assert "the core has no
+`ci.yml`", a premise that inverts the instant `init-repo.sh` copies one in. So the template's own
+suite lives in **`template-tests/`**, not `tests/`: `init-repo.sh` deletes that directory wholesale,
+which leaves the generated repo's `tests/` (the stack skeleton it just copied) untouched. The init
+script also deletes this spec and its plan from the generated tree. The empty
+`docs/superpowers/{specs,plans}/` directories stay — that is where the new repo's *own* specs go.
+
 ```
 repo-template/
 ├── .github/
-│   ├── workflows/guard-base-branch.yml
+│   ├── workflows/{guard-base-branch.yml, secret-scan.yml}
 │   ├── rulesets/{org-ruleset.json, repo-ruleset.json}
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   ├── CODEOWNERS.tmpl                 # NOT live; init-repo.sh substitutes a real team or drops it
@@ -209,7 +249,12 @@ repo-template/
 ├── .pre-commit-config.yaml             # gitleaks
 ├── scripts/
 │   ├── init-repo.sh                    # <python|node> [--team <slug>]: select stack, push branches
+│   ├── check-base-branch.sh            # the guard's decision logic; run from the BASE branch
 │   └── apply-rulesets.sh               # apply what the plan allows; report what it skipped
+├── template-tests/                     # the TEMPLATE's own suite. DELETED by init-repo.sh — it
+│                                       #   tests repo-template's premises, not the generated repo's,
+│                                       #   and it is not in tests/ so that deleting it cannot take
+│                                       #   the generated repo's tests/ skeleton with it.
 ├── templates/
 │   ├── python/                         # pyproject.toml (hatchling, src/, ruff, mypy, pytest),
 │   │                                   #   ci.yml (matrix), Dockerfile + .dockerignore (Cloud Run Job),
@@ -293,8 +338,27 @@ the repo has no code-owner review. A repo either has a real, verified owning tea
 having none.
 
 Note that team existence is necessary but not sufficient — the team must also be granted write access
-to the new repo. `init-repo.sh` checks for that too and warns if the team has no write permission,
-because that is the exact silent-failure case.
+to the new repo, because that is the exact silent-failure case.
+
+**`init-repo.sh` GRANTS write access; it does not merely warn.** (An earlier draft of this spec said
+it warns. Warning was the wrong call, and the shipped script does not do it.) A warning nobody actions
+leaves an inert `CODEOWNERS` — a file that looks like enforced review and enforces nothing, which is
+the precise failure this section exists to prevent. So when the team exists but lacks write, the
+script issues `PUT orgs/Avenue-Z/teams/<slug>/repos/<owner>/<repo>` with `permission=push`, re-reads
+the permission to confirm the grant actually took, and only then writes `CODEOWNERS`.
+
+**This means `--team` mutates GitHub permissions.** An "init" script that changes org access control
+is surprising, so it is documented in the script's header, in `README.md`, and in `CONTRIBUTING.md` —
+not only in the code. It requires repo-admin or org-owner rights; a 403 is fatal and no `CODEOWNERS`
+is written. Omit `--team` and no permission is touched.
+
+**Three outcomes when identifying the repo, and they are not interchangeable.** The write-access check
+needs to know which repo this is. `gh repo view` succeeding is one case; a working copy with **no
+GitHub remote yet** is a second (an answer: there is nothing to check against — write `CODEOWNERS`,
+but warn loudly that write access is UNVERIFIED and the file may be inert, and record that in the
+file's own header rather than claiming a verification that never happened); an expired token, a
+network blip, or a rate limit is a third (**not** an answer — `die`). Collapsing all three into "no
+repo" and writing `CODEOWNERS` anyway is the same silent downgrade as the 404-vs-401 trap below.
 
 ## Init script: idempotent, single-commit, git-rollback
 

@@ -179,9 +179,14 @@ and the template must dodge both:
    `ci.yml` into place — never before. The check names in the ruleset must match the **job** names in
    the workflow files exactly, or they will hang pending under a different alias.
 
-The ruleset also lists the org-admin role as a **bypass actor** for emergencies. See the unverified
-item below: whether a repo-level bypass actor survives an org-level ruleset is *not* confirmed, and
-that question blocks validation of the Team path — not merely the wording of `CONTRIBUTING.md`.
+**No bypass actors. Verified live, 2026-07-13.** The design originally listed the org-admin role as a
+`bypass_actor` (`bypass_mode: always`) "for emergencies." Applied to the live repo, a direct
+`git push origin main` by an org owner **succeeded** — the ruleset reported `enforcement: active`
+while protecting nothing against exactly the people most likely to push to `main`. The bypass also
+bought nothing: an org owner can already disable or edit a ruleset in settings, which is *visible and
+deliberate* rather than silent. `bypass_actors` is therefore **empty**: everyone, including org
+owners, goes through a PR. This closes the open question about repo-vs-org bypass precedence by
+removing the bypass entirely.
 
 ## Repository layout
 

@@ -12,12 +12,18 @@ assert_eq() { # <expected> <actual> <msg>
 }
 
 # git check-ignore exits 0 when the path IS ignored, 1 when it is not.
+# --no-index is required: without it, git check-ignore consults the index,
+# and a TRACKED file (e.g. .env.example) is always reported "not ignored"
+# no matter what .gitignore says. That makes the assertion vacuous for any
+# path that's already committed. --no-index forces pure pattern matching
+# against .gitignore, which is what these assertions are meant to verify.
+# Do not "simplify" this away.
 assert_ignored() {
-  if git check-ignore -q "$1"; then pass "$1 is ignored"; else fail "$1 should be ignored"; fi
+  if git check-ignore --no-index -q "$1"; then pass "$1 is ignored"; else fail "$1 should be ignored"; fi
 }
 
 assert_trackable() {
-  if git check-ignore -q "$1"; then fail "$1 should be trackable but is ignored"; else pass "$1 is trackable"; fi
+  if git check-ignore --no-index -q "$1"; then fail "$1 should be trackable but is ignored"; else pass "$1 is trackable"; fi
 }
 
 finish() {

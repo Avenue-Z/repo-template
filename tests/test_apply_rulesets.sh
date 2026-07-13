@@ -64,4 +64,73 @@ assert_match   "says main/staging/dev are NOT protected" 'not protected' "$out_p
 assert_match   "says a direct push to main will succeed" 'direct push to main will succeed' "$out_priv"
 assert_nomatch "makes no false claim of applied protection" 'ruleset applied|protection applied|now protected' "$out_priv"
 
+# ---------------------------------------------------------------------------------------
+# IDEMPOTENCY — GitHub allows multiple rulesets with the same name. A plain unconditional
+# POST every run would create a duplicate instead of updating the one already in force.
+# These cases drive a repo that IS reachable (PUBLIC, so the Free-plan honesty exit above
+# is never hit) and vary what the rulesets-list GET returns.
+echo "apply-rulesets: idempotency — existing ruleset with matching name triggers update (PUT), not a duplicate create"
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"orgs/Avenue-Z"*)                          echo team ;;
+  *nameWithOwner*)                            echo "Avenue-Z/repo-template" ;;
+  *visibility*)                               echo "PUBLIC" ;;
+  *"repos/Avenue-Z/repo-template/rulesets"*)  echo '[{"id":18889104,"name":"avenue-z-branch-protection"}]' ;;
+  *) echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB}/gh"
+
+if out_update=$(PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1); then
+  pass "existing-ruleset dry-run exits 0"
+else
+  fail "existing-ruleset dry-run should exit 0. Output: ${out_update}"
+fi
+assert_match   "says it would PUT/update the existing ruleset" 'put|update' "$out_update"
+assert_match   "names the existing ruleset id 18889104" '18889104' "$out_update"
+assert_nomatch "does not say it would POST/create a new ruleset" 'would post|create new' "$out_update"
+
+echo "apply-rulesets: idempotency — no existing ruleset with matching name triggers create (POST)"
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"orgs/Avenue-Z"*)                          echo team ;;
+  *nameWithOwner*)                            echo "Avenue-Z/repo-template" ;;
+  *visibility*)                               echo "PUBLIC" ;;
+  *"repos/Avenue-Z/repo-template/rulesets"*)  echo '[]' ;;
+  *) echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB}/gh"
+
+if out_create=$(PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1); then
+  pass "no-existing-ruleset dry-run exits 0"
+else
+  fail "no-existing-ruleset dry-run should exit 0. Output: ${out_create}"
+fi
+assert_match   "says it would POST/create a new ruleset" 'would post|create new' "$out_create"
+assert_nomatch "does not say it would PUT/update an existing ruleset" 'would put|update existing' "$out_create"
+
+echo "apply-rulesets: idempotency — a failed ruleset-list lookup must die, not silently create a duplicate"
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"orgs/Avenue-Z"*)                          echo team ;;
+  *nameWithOwner*)                            echo "Avenue-Z/repo-template" ;;
+  *visibility*)                               echo "PUBLIC" ;;
+  *"repos/Avenue-Z/repo-template/rulesets"*)  echo "HTTP 403: Forbidden (rate limited)" >&2; exit 1 ;;
+  *) echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB}/gh"
+
+if out_fail=$(PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1); then
+  fail "a failed ruleset lookup should NOT exit 0 — it must die rather than guess. Output: ${out_fail}"
+else
+  pass "a failed ruleset lookup makes the script die (non-zero exit)"
+fi
+assert_match   "explains the lookup failure" 'cannot list existing rulesets' "$out_fail"
+assert_nomatch "never falls through to claiming it would create/POST a duplicate" 'would post|create new' "$out_fail"
+
 finish

@@ -120,6 +120,19 @@ This matters most on the **private** repos, which is where the daily commits hap
 server-side push protection is free only on **public** repositories, so private repos on Free have
 no server-side net at all. The hook plus the CI job are the only backstop they get.
 
+**What this control does *not* do — state it plainly.** Its protection boundary is **merge, not push**:
+
+- The pre-commit hook is **local and skippable** — `git commit --no-verify` bypasses it entirely.
+- Private repos on Free have **no server-side push protection**, so nothing rejects the push itself.
+- Therefore a credential can be committed, pushed to a feature branch, and **live in the remote's
+  object store** — reachable, and surviving even if the PR is closed unmerged.
+- The `secret-scan` CI job catches it before it reaches `dev`/`staging`/`main`. That is the real,
+  and only, guarantee.
+
+The doc says this out loud because a control whose whole justification is "denylists leak" must not
+itself be sold as something it isn't. A leaked key that reached the remote is **burned and must be
+rotated**, even if the PR was never merged.
+
 `scripts/apply-rulesets.sh` detects org plan and repo visibility, applies whatever is actually
 possible, and **prints exactly what it skipped and why** — so nobody believes `main` is protected
 when it is not. On upgrade to Team, an owner runs it once with `--org` and every repo inherits the
@@ -129,12 +142,37 @@ Applying an org ruleset requires the `admin:org` token scope
 (`gh auth refresh -h github.com -s admin:org`); the current token has only
 `gist, read:org, repo, workflow`.
 
-**Ruleset contents must not lock out the maintainer.** A ruleset requiring one approving review on
-a repo whose sole collaborator is its creator makes every PR unmergeable — the author cannot approve
-their own PR. Therefore the shipped ruleset requires **a PR and passing CI, with
-`required_approving_review_count: 0`**, and lists the org-admin role as a **bypass actor** for
-emergencies. Teams that have two or more reviewers can raise the count in their own repo; the
-template must not default to a config that bricks a one-person repo.
+**Ruleset contents must not lock out the maintainer.** Two distinct ways a ruleset bricks a repo,
+and the template must dodge both:
+
+1. **Required review with nobody to review.** A ruleset requiring one approving review on a repo whose
+   sole collaborator is its creator makes every PR unmergeable — an author cannot approve their own PR.
+   So the shipped ruleset sets **`required_approving_review_count: 0`**: a PR is still mandatory, and CI
+   must still pass, but a solo maintainer can merge. Teams with two or more reviewers raise the count in
+   their own repo. The template must not default to a config that bricks a one-person repo.
+
+2. **A required status check that never reports.** This is the subtler trap. A required check that does
+   not exist does *not* fail the PR — it stays **pending forever**, and the PR can never be merged.
+   The stack-agnostic core has **no `ci.yml`**; the language `ci.yml` lives in `templates/` and only
+   lands when `init-repo.sh` runs. So a ruleset requiring a check named `ci` would make the template
+   repo itself permanently unmergeable, and success criterion #5 unachievable.
+
+   Therefore `repo-ruleset.json` requires **only the two checks that exist in the stack-agnostic core
+   and therefore actually run on the template repo**:
+
+   | Required check | Source | Exists in core? |
+   |---|---|---|
+   | `guard-base-branch` | `.github/workflows/guard-base-branch.yml` | yes |
+   | `secret-scan` | gitleaks CI job | yes |
+   | `ci` | `templates/{python,node}/.github/workflows/ci.yml` | **no — added post-init only** |
+
+   `init-repo.sh` adds `ci` to the generated repo's required-checks list **after** it has copied
+   `ci.yml` into place — never before. The check names in the ruleset must match the **job** names in
+   the workflow files exactly, or they will hang pending under a different alias.
+
+The ruleset also lists the org-admin role as a **bypass actor** for emergencies. See the unverified
+item below: whether a repo-level bypass actor survives an org-level ruleset is *not* confirmed, and
+that question blocks validation of the Team path — not merely the wording of `CONTRIBUTING.md`.
 
 ## Repository layout
 
@@ -179,9 +217,29 @@ Each `docs/` subdirectory gets a `.gitkeep` and a one-line `README.md` stating w
 
 **`.gitignore`** — union of the org's real patterns, closing the gaps found in the survey:
 OS (`.DS_Store`); Python (`__pycache__/`, `.venv/`, `.pytest_cache/`, `dist/`, `build/`, `*.egg-info/`);
-Node (`node_modules/`, `.next/`, `.vercel/`, `*.tsbuildinfo`); env (`.env`, `.env.local`, `.env.*`
-with a `!.env.example` negation); `.claude/`; and a **credential block** —
-`*service-account*.json`, `sa-key*.json`, `client_secrets.json`, `token.json`, `google-credentials.json`.
+Node (`node_modules/`, `.next/`, `.vercel/`, `*.tsbuildinfo`); `.claude/`; env (see below); and a
+**credential block** — `*service-account*.json`, `sa-key*.json`, `client_secrets.json`, `token.json`,
+`google-credentials.json`.
+
+**Env-block ordering is load-bearing and must be exactly this:**
+
+```gitignore
+.env
+.env.local
+.env.*
+!.env.example      # negation MUST come after .env.* or it silently does nothing
+```
+
+`.env.*` matches `.env.example`, so the negation must follow the broader pattern. Verified with
+`git check-ignore`:
+
+| Order | `.env` | `.env.local` | `.env.production` | `.env.example` |
+|---|---|---|---|---|
+| negation **last** (correct) | ignored | ignored | ignored | **trackable** ✅ |
+| negation **before** `.env.*` | ignored | ignored | ignored | **ignored** ❌ |
+
+The wrong order does not error — it silently ignores `.env.example`, the one env file the template
+exists to ship. A test asserts `git check-ignore .env.example` exits non-zero.
 
 **`.env.example`** — the only committed env file. Every var declared, commented, values blank.
 Modeled on `ad-spend-pacing/.env.example`, the best-annotated in the org. README setup step is
@@ -231,7 +289,7 @@ only `dev` — no `main`, no `staging` — so a script that fails halfway or is 
 in a half-configured state.
 
 - **Idempotent branch creation.** Create-if-absent for `staging` and `main` (check `git rev-parse
-  --verify`), never force-push. Re-running is a no-op, not a reset.
+  --verify`), never force-push.
 - **`set -euo pipefail`,** so a failure stops rather than continuing into a partial config.
 - **Copy is verified before `templates/` is removed,** and the whole change lands as **one commit**.
 - **Rollback is git.** The script runs inside a git working tree, so a failed run is undone with
@@ -239,6 +297,33 @@ in a half-configured state.
   A stage-to-temp-dir-then-atomically-move layer was considered and rejected: it protects against a
   failure mode git already covers, at the cost of real moving parts. On failure the script prints the
   recovery command.
+
+**Re-run repairs *absence*, not *drift*.** This bounds the idempotency claim honestly. Create-if-absent
+means a second run sees `staging`/`main` exist and does nothing. If `dev` has advanced since the first
+run, those branches are now *stale* relative to the intended lineage, and re-running **will not
+reconcile them** — by design, because silently fast-forwarding `main` is exactly the unreviewed
+promotion the branch model exists to prevent. So:
+
+- Re-run is safe and correct for: *the script died partway; a branch was never pushed.*
+- Re-run is **not** a reconciliation tool. Drift between `dev`, `staging`, and `main` is resolved the
+  normal way — by opening a PR.
+
+**`set -e` will kill the graceful paths unless they are guarded.** `gh api orgs/Avenue-Z/teams/<slug>`
+exits **non-zero on 404** — and a 404 is the *expected input* to the warn-and-continue branch, not an
+error. Under `set -e`, a bare `gh api ... | jq ...` aborts the script on precisely the case the feature
+was written to handle. Both the team-existence check and the team-write-access check must therefore use
+an explicit guard:
+
+```bash
+if ! gh api "orgs/Avenue-Z/teams/${team}" >/dev/null 2>&1; then
+  warn "team '${team}' not found — refusing to write CODEOWNERS"
+  rm -f .github/CODEOWNERS.tmpl
+else
+  ...
+fi
+```
+
+Same pattern for any `gh api` call whose failure is a decision, not a fault.
 
 ## New: linting
 
@@ -266,7 +351,14 @@ deliberately. Existing repos are not retrofitted as part of this work.
 8. `init-repo.sh --team <nonexistent>` refuses to write a live `CODEOWNERS`; with no `--team` it
    removes `CODEOWNERS.tmpl` and warns. No generated repo ever ships an inert CODEOWNERS.
 9. Committing a fake AWS/Google credential to the skeleton is blocked by the gitleaks pre-commit hook,
-   and the `secret-scan` CI job fails if it reaches a PR.
+   and — the guarantee that actually matters — the `secret-scan` CI job fails the PR when the hook is
+   bypassed with `--no-verify`.
+10. `git check-ignore .env.example` exits **non-zero** (i.e. the file is trackable) while
+    `git check-ignore .env.local` exits zero. Guards the negation-ordering trap.
+11. `init-repo.sh --team <nonexistent>` **warns and exits 0** — it does not abort with a `set -e`
+    crash. Proves the `gh api` 404 path is guarded rather than fatal.
+12. The template repo's own ruleset requires only `guard-base-branch` and `secret-scan`; a PR into
+    `main` reaches a mergeable state rather than hanging pending on a `ci` check that does not exist.
 
 ## Out of scope
 
@@ -289,6 +381,37 @@ a single commit, and a printed recovery command.
 
 Verified against GitHub docs, not assumed: CODEOWNERS silently ignores nonexistent or
 insufficient-access owners; "Manage branch protection rules and repository rulesets" is an Admin-role
-permission, not org-owner-exclusive. Left explicitly unverified: whether a repo creator in this org
-receives Admin, and Team-plan org-ruleset/repo-admin interaction — to be confirmed before any promise
-about it lands in `CONTRIBUTING.md`.
+permission, not org-owner-exclusive.
+
+## Review log — 2026-07-13 (round 2)
+
+Second review round. All six items accepted; two were blocking and are now resolved in the design.
+
+- **(blocking) Required-check trap.** A required status check that never reports hangs **pending**
+  rather than failing, so a ruleset requiring `ci` — which lives in `templates/` and does not exist in
+  the stack-agnostic core — would have made the template repo permanently unmergeable and criterion #5
+  unachievable. Ruleset now requires only `guard-base-branch` and `secret-scan` (both in core);
+  `init-repo.sh` adds `ci` to a generated repo only after `ci.yml` is in place. New criterion #12.
+- **(blocking) `set -e` kills the graceful paths.** `gh api .../teams/<slug>` exits non-zero on 404,
+  which is the expected input to the warn-and-continue branch. Both `gh api` checks now use explicit
+  `if ! gh api ...` guards. New criterion #11.
+- **Idempotency bounded.** "Safe to re-run" now states that re-run repairs *absence*, not *drift*;
+  stale `staging`/`main` are reconciled by PR, not by the script — silently fast-forwarding `main` is
+  the exact unreviewed promotion the branch model prevents.
+- **Secret-scanning boundary stated honestly.** `--no-verify` skips the hook and private repos on Free
+  have no push protection, so the boundary is **merge, not push**: a credential can reach the remote's
+  object store on a feature branch and survive an unmerged PR. Such a key is burned and must be rotated.
+- **`.gitignore` negation ordering pinned,** and verified with `git check-ignore`: `!.env.example` must
+  follow `.env.*`, or `.env.example` is *silently* ignored — the one file the template exists to ship.
+  New criterion #10.
+- **Unverified item promoted to a Team-path blocker.** Whether a repo-level bypass actor survives an
+  org-level ruleset determines whether the emergency-bypass design works at all. It blocks validation of
+  the Team path, not merely the wording of `CONTRIBUTING.md`.
+
+### Open, blocking the Team-upgrade path only
+
+1. Does a repo creator in Avenue-Z actually receive the Admin role on the repo they create?
+2. Does a repo-level bypass actor survive an org-level ruleset, or does the org ruleset outrank it?
+
+Both are unanswerable on Free. Confirm on Team before the org-wide rollout, and before either claim
+lands in `CONTRIBUTING.md`. Neither blocks building the template itself.

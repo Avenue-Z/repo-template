@@ -26,7 +26,9 @@
 Declared in `.env.example`. Copy to `.env.local`. Never commit `.env.local`.
 
 ## Workflow rules
-1. Branch flow is `feat/* → dev → staging → main`. **Never push directly to `main`.**
+1. Branch flow is `feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/* → dev → staging → main`.
+   **Never push directly to `main`.** `CONTRIBUTING.md` is canonical; `guard-base-branch` enforces it
+   and **fails closed on any prefix not in that list**.
 2. Sync before you start: `git fetch --all --prune && git log origin/dev..HEAD`.
 3. Verify before claiming done — run the tests and read the output. Do not assert a pass you
    have not seen.

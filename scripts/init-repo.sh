@@ -217,11 +217,31 @@ EOF
 }
 add_dependabot_ecosystem
 
-# Remove templates/ ONLY. init-repo.sh does NOT delete itself: criterion 7 requires a re-run
-# to be a no-op exiting 0, and a self-deleting script cannot be re-run. The re-run IS the
-# recovery path for a first run that died partway. scripts/ keeps apply-rulesets.sh regardless.
-rm -rf templates
-info "removed templates/"
+# Strip everything that is ABOUT the template rather than part of the generated repo. The
+# spec promises a generated repo carries ZERO dead files.
+#
+#   templates/       — the unselected stack (and the selected one, now copied into place)
+#   template-tests/  — the template's OWN bash suite. It must NOT ship: it tests the
+#                      template's premises, two of which INVERT the moment ci.yml exists
+#                      (test_rulesets.sh / test_apply_rulesets.sh assert "the core has no
+#                      ci.yml"), so a generated repo would ship two tests that FAIL out of
+#                      the box. It lives in template-tests/ — not tests/ — precisely so this
+#                      one `rm -rf` removes it wholesale without touching the stack's own
+#                      tests/ skeleton, which we just copied in.
+#   the template's own spec/plan — 500 lines about repo-template itself, meaningless in a
+#                      generated repo. The empty docs/superpowers/{specs,plans}/ dirs and
+#                      their README + .gitkeep stay: that is where the new repo's OWN
+#                      specs and plans go.
+#
+# init-repo.sh does NOT delete itself: criterion 7 requires a re-run to be a no-op exiting 0,
+# and a self-deleting script cannot be re-run. The re-run IS the recovery path for a first run
+# that died partway. scripts/ keeps apply-rulesets.sh regardless.
+rm -rf templates template-tests
+info "removed templates/ and template-tests/ (the template's own self-tests)"
+
+rm -f docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md \
+      docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md
+info "removed the template's own spec and plan"
 
 git add -A
 git commit -q -m "chore: initialize ${STACK} repo from Avenue-Z/repo-template"

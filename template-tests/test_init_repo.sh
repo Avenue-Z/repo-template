@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-source "${REPO_ROOT}/tests/lib.sh"
+source "${REPO_ROOT}/template-tests/lib.sh"
 
 # Build a throwaway clone so we never mutate the real template.
 WORK="$(mktemp -d)"
@@ -27,6 +27,26 @@ done
 for b in dev staging main; do
   assert_ok "branch $b exists" git show-ref --verify --quiet "refs/heads/$b"
 done
+
+# ZERO DEAD FILES. A generated repo must not ship the template's own self-tests (two of which
+# INVERT once ci.yml exists — they assert the core has none — and would fail out of the box),
+# nor the template's own 500-line spec/plan. Assert on the working tree AND on every branch,
+# because a head that still carries them is the same dead weight one commit away.
+assert_no_dir  "template-tests/ removed from working tree" template-tests
+assert_no_file "template's spec removed" docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md
+assert_no_file "template's plan removed" docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md
+for b in dev staging main; do
+  if git ls-tree -r --name-only "$b" | grep -qE '^template-tests/|^docs/superpowers/(specs|plans)/2026-07-13-'; then
+    fail "branch $b still carries the template's self-tests or its own spec/plan"
+  else
+    pass "branch $b is free of the template's self-tests and its own spec/plan"
+  fi
+done
+
+# The stack's OWN tests/ skeleton must SURVIVE — the point of template-tests/ is that removing
+# the template's suite does not take the generated repo's test directory with it.
+assert_file "the python skeleton's tests/ survived" tests/test_smoke.py
+assert_file "the python skeleton's conftest.py survived" tests/conftest.py
 
 # Criterion 1 — the python skeleton is real
 assert_file "pyproject.toml copied" pyproject.toml
@@ -105,7 +125,7 @@ assert_dir   "died BEFORE mutating the tree (templates/ intact)" templates
 # A team that EXISTS but lacks write access no longer just gets a warning — the script
 # now GRANTS it write, because a warning nobody actions leaves every new repo with an
 # inert CODEOWNERS (GitHub silently ignores an entry for a team without write). Drive
-# both outcomes with a fake `gh` on PATH (pattern from tests/test_apply_rulesets.sh) so
+# both outcomes with a fake `gh` on PATH (pattern from template-tests/test_apply_rulesets.sh) so
 # no real GitHub call is made.
 echo "init-repo: team exists but lacks write — script grants it"
 STUB_OK="$(mktemp -d)"

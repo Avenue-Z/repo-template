@@ -592,20 +592,14 @@ git commit -m "ci: gitleaks pre-commit hook and secret-scan job"
 
 `target-branch: dev` keeps dependabot inside the promotion chain, and pairs with the `dependabot/*` row in Task 3's matrix.
 
+**Ship `github-actions` ONLY.** The stack-agnostic core has no `pyproject.toml` and no `package.json`, so declaring `pip` or `npm` here would make dependabot error with "manifest not found" on the template repo, and would leave a python repo carrying a dead npm block. `init-repo.sh` appends the block for the stack it selected (Task 7). Every repo then declares exactly the ecosystems it actually has.
+
 ```yaml
+# Only github-actions here: it is the one ecosystem the stack-agnostic core actually has.
+# scripts/init-repo.sh appends the pip OR npm block for the stack it selects.
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: "/"
-    schedule: { interval: weekly }
-    target-branch: dev
-    open-pull-requests-limit: 5
-  - package-ecosystem: pip
-    directory: "/"
-    schedule: { interval: weekly }
-    target-branch: dev
-    open-pull-requests-limit: 5
-  - package-ecosystem: npm
     directory: "/"
     schedule: { interval: weekly }
     target-branch: dev
@@ -957,8 +951,27 @@ info "copied templates/${STACK} and verified"
 
 resolve_codeowners
 
-rm -rf templates scripts/init-repo.sh
-info "removed templates/ and this script"
+# Dependabot: the core declares only github-actions (the one ecosystem it actually has).
+# Append the block for the stack we just selected, so this repo declares exactly what it has.
+add_dependabot_ecosystem() {
+  local eco
+  case "${STACK}" in python) eco=pip ;; node) eco=npm ;; esac
+  cat >> .github/dependabot.yml <<EOF
+  - package-ecosystem: ${eco}
+    directory: "/"
+    schedule: { interval: weekly }
+    target-branch: dev
+    open-pull-requests-limit: 5
+EOF
+  info "added the '${eco}' ecosystem to .github/dependabot.yml"
+}
+add_dependabot_ecosystem
+
+# Remove templates/ ONLY. init-repo.sh does NOT delete itself: criterion 7 requires a re-run
+# to be a no-op exiting 0, and a self-deleting script cannot be re-run. The re-run IS the
+# recovery path for a first run that died partway. scripts/ keeps apply-rulesets.sh regardless.
+rm -rf templates
+info "removed templates/"
 
 git add -A
 git commit -q -m "chore: initialize ${STACK} repo from Avenue-Z/repo-template"

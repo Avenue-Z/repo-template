@@ -54,13 +54,40 @@ if [ "${DO_ORG}" -eq 1 ]; then
     warn "  The ruleset is committed at .github/rulesets/org-ruleset.json, ready to apply on upgrade."
     exit 0
   fi
+
+  ORG_PAYLOAD=".github/rulesets/org-ruleset.json"
+  ORG_NAME="$(jq -r '.name' "${ORG_PAYLOAD}")"
+
+  # GitHub allows multiple rulesets with the same name — a plain POST every run would create
+  # a duplicate instead of updating the one already in force. Look up an existing ruleset by
+  # name first. A failed lookup is NOT "no existing ruleset": if we can't ask, we must not
+  # guess, or we risk silently creating a diverging duplicate. Die instead.
+  if ! ORG_LIST="$(gh api "orgs/${ORG}/rulesets" 2>&1)"; then
+    die "cannot list existing rulesets for org ${ORG} (auth? network? rate limit?): ${ORG_LIST}
+         Refusing to continue: without the existing list we cannot tell whether '${ORG_NAME}'
+         already exists, and POSTing blind risks creating a duplicate ruleset that silently
+         diverges from it. Fix the cause (gh auth status) and re-run."
+  fi
+  ORG_EXISTING_ID="$(printf '%s' "${ORG_LIST}" | jq -r --arg name "${ORG_NAME}" '[.[] | select(.name==$name)][0].id // empty')"
+
   if [ "${DRY}" -eq 1 ]; then
-    info "[dry-run] would POST orgs/${ORG}/rulesets from .github/rulesets/org-ruleset.json"
+    if [ -n "${ORG_EXISTING_ID}" ]; then
+      info "[dry-run] would PUT orgs/${ORG}/rulesets/${ORG_EXISTING_ID} (update existing '${ORG_NAME}') from ${ORG_PAYLOAD}"
+    else
+      info "[dry-run] would POST orgs/${ORG}/rulesets (create new '${ORG_NAME}') from ${ORG_PAYLOAD}"
+    fi
     exit 0
   fi
-  gh api -X POST "orgs/${ORG}/rulesets" --input .github/rulesets/org-ruleset.json \
-    || die "org ruleset failed. Need the admin:org scope? gh auth refresh -h github.com -s admin:org"
-  info "org ruleset applied — every repo in ${ORG} now inherits it."
+
+  if [ -n "${ORG_EXISTING_ID}" ]; then
+    gh api -X PUT "orgs/${ORG}/rulesets/${ORG_EXISTING_ID}" --input "${ORG_PAYLOAD}" \
+      || die "org ruleset update failed. Need the admin:org scope? gh auth refresh -h github.com -s admin:org"
+    info "updated existing org ruleset '${ORG_NAME}' (id ${ORG_EXISTING_ID}) — every repo in ${ORG} now inherits it."
+  else
+    gh api -X POST "orgs/${ORG}/rulesets" --input "${ORG_PAYLOAD}" \
+      || die "org ruleset failed. Need the admin:org scope? gh auth refresh -h github.com -s admin:org"
+    info "created new org ruleset '${ORG_NAME}' — every repo in ${ORG} now inherits it."
+  fi
   exit 0
 fi
 
@@ -105,12 +132,36 @@ if [ "${VIS}" != "PUBLIC" ] && [ "${PLAN}" = free ]; then
   exit 0                       # NOT an error — an honest report of a plan limit.
 fi
 
+NAME="$(jq -r '.name' "${PAYLOAD}")"
+
+# GitHub allows multiple rulesets with the same name — a plain POST every run would create a
+# duplicate instead of updating the one already in force. Look up an existing ruleset by name
+# first. A failed lookup is NOT "no existing ruleset": if we can't ask, we must not guess, or
+# we risk silently creating a diverging duplicate. Die instead.
+if ! LIST="$(gh api "repos/${REPO}/rulesets" 2>&1)"; then
+  die "cannot list existing rulesets for ${REPO} (auth? network? rate limit?): ${LIST}
+       Refusing to continue: without the existing list we cannot tell whether '${NAME}'
+       already exists, and POSTing blind risks creating a duplicate ruleset that silently
+       diverges from it. Fix the cause (gh auth status) and re-run."
+fi
+EXISTING_ID="$(printf '%s' "${LIST}" | jq -r --arg name "${NAME}" '[.[] | select(.name==$name)][0].id // empty')"
+
 if [ "${DRY}" -eq 1 ]; then
-  info "[dry-run] would POST repos/${REPO}/rulesets with the required checks listed above"
+  if [ -n "${EXISTING_ID}" ]; then
+    info "[dry-run] would PUT repos/${REPO}/rulesets/${EXISTING_ID} (update existing '${NAME}') with the required checks listed above"
+  else
+    info "[dry-run] would POST repos/${REPO}/rulesets (create new '${NAME}') with the required checks listed above"
+  fi
   exit 0
 fi
 
-gh api -X POST "repos/${REPO}/rulesets" --input "${PAYLOAD}" >/dev/null \
-  || die "ruleset POST failed for ${REPO}"
-info "ruleset applied to ${REPO} on main, staging, dev."
+if [ -n "${EXISTING_ID}" ]; then
+  gh api -X PUT "repos/${REPO}/rulesets/${EXISTING_ID}" --input "${PAYLOAD}" >/dev/null \
+    || die "ruleset PUT failed for ${REPO} (id ${EXISTING_ID})"
+  info "updated existing ruleset '${NAME}' (id ${EXISTING_ID}) on ${REPO} — main, staging, dev."
+else
+  gh api -X POST "repos/${REPO}/rulesets" --input "${PAYLOAD}" >/dev/null \
+    || die "ruleset POST failed for ${REPO}"
+  info "created new ruleset '${NAME}' on ${REPO} — main, staging, dev."
+fi
 info "Verify you can still merge:  gh api repos/${REPO}/branches/main/protection"

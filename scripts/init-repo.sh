@@ -2,7 +2,7 @@
 #
 # Turn a fresh copy of Avenue-Z/repo-template into a working repo.
 #
-#   ./scripts/init-repo.sh <python|node> [--team <slug>] [--no-push]
+#   ./scripts/init-repo.sh <python|node|next> [--team <slug>] [--no-push]
 #
 # --team <slug>: writes .github/CODEOWNERS naming @Avenue-Z/<slug>, after verifying the
 #   team exists. If the team exists but lacks write access to the repo, the script GRANTS
@@ -33,9 +33,9 @@ die()  { printf '\033[31mERROR\033[0m %s\n' "$*" >&2
          printf 'Recover with: git checkout -- . && git clean -fd\n' >&2
          exit 1; }
 
-[ $# -ge 1 ] || die "usage: init-repo.sh <python|node> [--team <slug>] [--no-push]"
+[ $# -ge 1 ] || die "usage: init-repo.sh <python|node|next> [--team <slug>] [--no-push]"
 STACK="$1"; shift
-case "${STACK}" in python|node) ;; *) die "stack must be 'python' or 'node', got '${STACK}'" ;; esac
+case "${STACK}" in python|node|next) ;; *) die "stack must be 'python', 'node' or 'next', got '${STACK}'" ;; esac
 while [ $# -gt 0 ]; do
   case "$1" in
     # An empty value is not the only bad value: `--team --no-push` would silently set
@@ -291,6 +291,21 @@ else
   [ -f package.json ] || die "copy failed: package.json missing"
 fi
 [ -f .github/workflows/ci.yml ] || die "copy failed: .github/workflows/ci.yml missing"
+
+# vercel.json is a CONTROL, not a config file: it carries `deploymentEnabled: false`, and Vercel
+# treats every UNSPECIFIED branch as deployable. So a missing vercel.json does not mean "no Vercel
+# settings" — it means EVERY BRANCH DEPLOYS, including preview deploys off every feature branch,
+# the moment someone links the project. A silent copy failure here would hand you the exact
+# runaway-deploy behaviour the file exists to prevent. Absence is fatal.
+if [ "${STACK}" = next ]; then
+  [ -f vercel.json ] || die "copy failed: vercel.json missing.
+       Refusing to continue: vercel.json is what keeps deploys OFF by default. Without it, Vercel
+       treats every branch as deployable and linking the project would start deploying immediately."
+  grep -q '"deploymentEnabled": *false' vercel.json \
+    || die "vercel.json does not disable deployments. Refusing to continue: the template ships
+       deploys OFF so that enabling one is a reviewed change, not an accident."
+  info "vercel.json present — deploys are OFF until someone enables a branch in a PR"
+fi
 info "copied templates/${STACK} and verified"
 
 resolve_codeowners
@@ -299,7 +314,8 @@ resolve_codeowners
 # Append the block for the stack we just selected, so this repo declares exactly what it has.
 add_dependabot_ecosystem() {
   local eco
-  case "${STACK}" in python) eco=pip ;; node) eco=npm ;; esac
+  # next is a node project — same ecosystem, different skeleton.
+  case "${STACK}" in python) eco=pip ;; node|next) eco=npm ;; esac
   cat >> .github/dependabot.yml <<EOF
   - package-ecosystem: ${eco}
     directory: "/"

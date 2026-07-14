@@ -4,7 +4,14 @@
 
     feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/*  →  dev  →  staging  →  main
 
-- **`dev`** — integration branch, and the default. Open your PR here.
+- **`dev`** — integration branch. **Open your PR here.**
+
+  Note the repo's *GitHub default branch* is `main`, not `dev`. That is deliberate: Vercel (and
+  most tooling) takes the **production** branch from the repository default, so a repo defaulting
+  to `dev` would deploy every merged PR straight to production. The cost is that a PR opened in the
+  GitHub UI targets `main` — **change the base to `dev`** with the dropdown next to the title, or
+  use `gh pr create --base dev`. If you forget, `guard-base-branch` fails the PR loudly; it re-runs
+  when you change the base.
 - **`staging`** — pre-prod soak / QA. Receives PRs from `dev` only.
 - **`main`** — production. Receives PRs from `staging` only.
 

@@ -69,8 +69,11 @@ while time.time() < deadline:
         os.write(fd, inp.encode())
         sent = True
 os.close(fd)
-os.waitpid(pid, 0)
+_, status = os.waitpid(pid, 0)
 sys.stdout.write(bytes(out).decode(errors="replace").replace("\r", ""))
+# Propagate the child EXIT CODE. Without this, pty_run always looks like a success, and every
+# "it refuses to X" assertion silently passes no matter what the script did.
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 '
 }
 

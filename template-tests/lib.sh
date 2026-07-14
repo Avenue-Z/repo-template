@@ -6,6 +6,16 @@ FAILURES=0
 
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+# A skipped check is NOT a passed check, and must never read like one. It prints, loudly, so a
+# suite that quietly stopped testing something cannot masquerade as a green run.
+skip() { printf '  SKIP %s\n' "$1"; }
+
+# Some assertions need real, authenticated access to the Avenue-Z org (apply-rulesets.sh reads the
+# org PLAN before it does anything, and every decision hangs off that). A CI runner's GITHUB_TOKEN
+# is repo-scoped and cannot read org details, so those blocks are skipped there rather than failing
+# a run for a reason that has nothing to do with the change under test. Locally, with a real gh
+# login, they run for real.
+have_org_access() { gh api orgs/Avenue-Z -q .plan.name >/dev/null 2>&1; }
 
 assert_eq() { # <expected> <actual> <msg>
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (expected '$1', got '$2')"; fi

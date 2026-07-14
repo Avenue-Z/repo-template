@@ -74,15 +74,28 @@ info "org plan: ${PLAN}"
 # Add 'ci' to the required checks ONLY if ci.yml is actually present. A required check
 # that never reports does not fail the PR — it hangs PENDING forever, and nothing merges.
 PAYLOAD="$(mktemp)"; trap 'rm -f "${PAYLOAD}"' EXIT
-if [ -f .github/workflows/ci.yml ]; then
-  info "ci.yml present — adding 'ci' to required checks"
-  jq '(.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks)
-      += [{"context":"ci"}]' .github/rulesets/repo-ruleset.json > "${PAYLOAD}"
-else
-  info "no ci.yml (stack-agnostic core) — requiring only guard-base-branch + secret-scan"
-  info "  A required 'ci' check would hang pending forever and make every PR unmergeable."
-  cp .github/rulesets/repo-ruleset.json "${PAYLOAD}"
-fi
+cp .github/rulesets/repo-ruleset.json "${PAYLOAD}"
+
+# Add a context to the required checks ONLY if the workflow that reports it actually exists here.
+# A required check that never reports does not fail a PR — it hangs it PENDING FOREVER, and
+# nothing in the repo can be merged again. So both of these are conditional on a file, not on an
+# assumption about which repo we are in.
+#
+#   ci             -> arrives with the stack, in a GENERATED repo (init-repo.sh copies it).
+#   template-tests -> exists ONLY in repo-template itself. init-repo.sh DELETES it, so a generated
+#                     repo must never require it. This is why the check is file-gated rather than
+#                     baked into repo-ruleset.json, which both kinds of repo share.
+add_context() { # <context> <workflow-file> <why-it-matters>
+  if [ -f "$2" ]; then
+    info "$2 present — adding '$1' to required checks"
+    jq --arg c "$1" '(.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks)
+        += [{"context":$c}]' "${PAYLOAD}" > "${PAYLOAD}.tmp" && mv "${PAYLOAD}.tmp" "${PAYLOAD}"
+  else
+    info "no $2 — not requiring '$1' ($3)"
+  fi
+}
+add_context ci             .github/workflows/ci.yml             "a required check with no workflow hangs every PR pending forever"
+add_context template-tests .github/workflows/template-tests.yml "this workflow is the template's own, and init-repo.sh removes it"
 info "required status checks:"
 jq -r '.rules[] | select(.type=="required_status_checks")
        | .parameters.required_status_checks[].context' "${PAYLOAD}" | sed 's/^/        required: /'

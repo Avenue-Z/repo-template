@@ -4,23 +4,33 @@ cd "$(dirname "$0")/.."
 # shellcheck source=template-tests/lib.sh disable=SC1091
 source template-tests/lib.sh
 
-echo "apply-rulesets: honest reporting"
-if out=$(./scripts/apply-rulesets.sh --dry-run 2>&1); then
-  pass "--dry-run exits 0"
+# This block drives the REAL gh against the REAL org: apply-rulesets.sh reads the org plan before
+# it does anything, and every decision below hangs off it. A CI runner's GITHUB_TOKEN is
+# repo-scoped and cannot read org details, so skip there rather than fail a run for a reason that
+# has nothing to do with the change under test. The stub-driven cases further down cover the same
+# decision logic without the network; this one exists to prove it works against the real API.
+echo "apply-rulesets: honest reporting (needs live org access)"
+if ! have_org_access; then
+  skip "no authenticated access to the Avenue-Z org (expected on a CI runner) — the live-gh checks below are NOT running"
+  skip "  the stub-driven cases further down still cover the same decision logic"
 else
-  fail "--dry-run should exit 0 even when protection is impossible"
-fi
-assert_match "explains what it did or skipped" 'free|skip|cannot|unavailable|would apply' "$out"
+  if out=$(./scripts/apply-rulesets.sh --dry-run 2>&1); then
+    pass "--dry-run exits 0"
+  else
+    fail "--dry-run should exit 0 even when protection is impossible"
+  fi
+  assert_match "explains what it did or skipped" 'free|skip|cannot|unavailable|would apply' "$out"
 
-echo "apply-rulesets: anti-brick — no ci.yml in template core means 'ci' must never be required"
-if [ -f .github/workflows/ci.yml ]; then
-  fail "template core unexpectedly has ci.yml — this test's premise no longer holds, update it"
-else
-  pass "confirmed no ci.yml present (test precondition for the anti-brick case)"
+  echo "apply-rulesets: anti-brick — no ci.yml in template core means 'ci' must never be required"
+  if [ -f .github/workflows/ci.yml ]; then
+    fail "template core unexpectedly has ci.yml — this test's premise no longer holds, update it"
+  else
+    pass "confirmed no ci.yml present (test precondition for the anti-brick case)"
+  fi
+  assert_nomatch "'ci' is NOT listed as a required status check" 'required: ci$' "$out"
+  assert_match   "'guard-base-branch' is listed as required" 'required: guard-base-branch' "$out"
+  assert_match   "'secret-scan' is listed as required" 'required: secret-scan' "$out"
 fi
-assert_nomatch "'ci' is NOT listed as a required status check" 'required: ci$' "$out"
-assert_match   "'guard-base-branch' is listed as required" 'required: guard-base-branch' "$out"
-assert_match   "'secret-scan' is listed as required" 'required: secret-scan' "$out"
 
 # ---------------------------------------------------------------------------------------
 # --org IS GONE FROM THIS SCRIPT, AND MUST STAY GONE.

@@ -11,6 +11,18 @@ echo "rulesets: valid JSON"
 if jq empty "$REPO_RULESET" >/dev/null 2>&1; then pass "$REPO_RULESET is valid JSON"; else fail "$REPO_RULESET is valid JSON"; fi
 if jq empty "$ORG_RULESET" >/dev/null 2>&1; then pass "$ORG_RULESET is valid JSON"; else fail "$ORG_RULESET is valid JSON"; fi
 
+# `template-tests` must never be BAKED INTO repo-ruleset.json. That file is shared by the template
+# AND every repo generated from it — and a generated repo has no template-tests workflow, because
+# init-repo.sh deletes it. Baking the context in would make every generated repo require a check
+# that can never report: PRs hang PENDING FOREVER and the repo is unmergeable from day one.
+# It is INJECTED by apply-rulesets.sh, and only when the workflow file is actually present.
+echo "rulesets: 'template-tests' must never be a baked-in required context (generated repos have no such workflow)"
+if grep -q '"context": *"template-tests"' .github/rulesets/*.json; then
+  fail "'template-tests' is hard-coded in a ruleset — every generated repo would hang every PR pending forever"
+else
+  pass "'template-tests' is absent from the committed rulesets (apply-rulesets.sh injects it only when the workflow exists)"
+fi
+
 echo "rulesets: 'ci' must never be a required context (core has no ci workflow -> pending forever)"
 if grep -q '"context": *"ci"' .github/rulesets/*.json; then
   fail "'ci' context found in rulesets (would hang pending forever)"
@@ -190,10 +202,19 @@ echo "workflows: the 'ci' context apply-rulesets.sh injects must be reachable in
 # Tie the premise to the script: apply-rulesets.sh appends {"context":"ci"} to the required
 # checks whenever .github/workflows/ci.yml exists. Every stack template ships one, so every
 # generated repo gets a required 'ci' — which must therefore be a real, non-matrix job.
-if grep -q '"context":"ci"' scripts/apply-rulesets.sh; then
-  pass "apply-rulesets.sh injects a required 'ci' context (premise for the checks below)"
+# Both required contexts are FILE-GATED: apply-rulesets.sh adds them only when the workflow that
+# reports them actually exists. That is what lets one shared repo-ruleset.json serve both the
+# template (which has template-tests.yml but no ci.yml) and a generated repo (the reverse) without
+# either one requiring a check that can never report.
+if grep -qE 'add_context +ci +\.github/workflows/ci\.yml' scripts/apply-rulesets.sh; then
+  pass "apply-rulesets.sh injects 'ci' only when ci.yml exists (premise for the checks below)"
 else
-  fail "apply-rulesets.sh no longer injects 'ci' — this test's premise changed, update it"
+  fail "apply-rulesets.sh no longer file-gates the 'ci' context — this test's premise changed, update it"
+fi
+if grep -qE 'add_context +template-tests +\.github/workflows/template-tests\.yml' scripts/apply-rulesets.sh; then
+  pass "apply-rulesets.sh injects 'template-tests' only when that workflow exists"
+else
+  fail "apply-rulesets.sh must file-gate 'template-tests' — a generated repo has no such workflow, and an unconditional context would hang every PR pending forever"
 fi
 for tdir in templates/*/; do
   stack="$(basename "$tdir")"

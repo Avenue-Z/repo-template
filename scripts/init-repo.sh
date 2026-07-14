@@ -347,7 +347,12 @@ add_dependabot_ecosystem
 # and a self-deleting script cannot be re-run. The re-run IS the recovery path for a first run
 # that died partway. scripts/ keeps apply-rulesets.sh regardless.
 rm -rf templates template-tests
-info "removed templates/ and template-tests/ (the template's own self-tests)"
+# The workflow that RUNS that suite must go with it. If it stayed, a generated repo would ship a
+# job that runs a directory we just deleted — and if `template-tests` were ever a required check
+# there, it would never report and hang every PR PENDING FOREVER. That is why apply-rulesets.sh
+# requires the context only when the workflow file is actually present.
+rm -f .github/workflows/template-tests.yml
+info "removed templates/, template-tests/ and its workflow (the template's own self-tests)"
 
 rm -f docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md \
       docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md

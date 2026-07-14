@@ -10,13 +10,22 @@
 #
 # This script will:
 #   * check you are logged into the Vercel CLI (it will NOT log you in — that is yours to do)
+#   * REFUSE to link unless the repo's default branch is `main` (see why, below)
 #   * run `vercel link` (interactive: you pick the scope and the project)
-#   * VERIFY the production branch is `main`, and REFUSE to finish if it is not
+#   * establish that the production branch really is `main`, and REFUSE to finish if it is not:
+#       - with VERCEL_TOKEN set, by asking the documented REST API (a real, machine-made check)
+#       - without it, by making YOU read Branch Tracking in the dashboard and type what you see,
+#         because the Vercel CLI genuinely cannot report it (no vercel command emits JSON)
 #
 # It will NOT:
 #   * run `vercel deploy`, ever, under any flag
 #   * enable any branch for deployment
 #   * "fix" a wrong production branch behind your back
+#   * claim to have verified something it did not. If it cannot check, it says so and makes a human
+#     check — it never warns and carries on. (An earlier version did exactly that, and the check it
+#     was "doing" could never have fired: it called `vercel project inspect --json`, a flag the CLI
+#     does not have. template-tests/test_link_vercel.sh now contract-tests the CLI surface so an
+#     invented flag fails the suite instead of silently disabling the control.)
 #
 # WHY THE PRODUCTION-BRANCH CHECK IS THE POINT OF THIS SCRIPT
 #
@@ -130,38 +139,82 @@ PROJECT_ID="$(jq -r '.projectId // empty' .vercel/project.json)"
 info "linked to Vercel project ${PROJECT_ID}"
 
 # --------------------------------------------------------- verify what Vercel ACTUALLY thinks
-# Do not trust the default we just reasoned about — ask Vercel. A project may carry an explicit
-# productionBranch override set by hand in the dashboard, and that override wins.
+# A project may carry an explicit productionBranch override, set by hand in the dashboard, and
+# that override WINS over the repository default branch we verified above. So the gh check alone
+# is not sufficient — we have to ask Vercel.
 #
-#   null / absent  -> Vercel inherits the repository default branch, which we verified is main. OK.
-#   "main"         -> explicit and correct. OK.
-#   anything else  -> an override that would deploy the WRONG branch to production. Refuse.
-if PROJECT_JSON="$(vercel project inspect "${PROJECT_ID}" --json 2>/dev/null)" \
-     && [ -n "${PROJECT_JSON}" ]; then
-  ACTUAL="$(printf '%s' "${PROJECT_JSON}" | jq -r '.link.productionBranch // empty' 2>/dev/null || true)"
-  if [ -z "${ACTUAL}" ]; then
-    info "Vercel has no productionBranch override — it inherits the default branch ('${PROD_BRANCH}'). Correct."
-  elif [ "${ACTUAL}" = "${PROD_BRANCH}" ]; then
-    info "Vercel productionBranch is explicitly '${ACTUAL}'. Correct."
-  else
-    die "Vercel's production branch is '${ACTUAL}', not '${PROD_BRANCH}'.
+# THE CLI CANNOT ANSWER THIS. `vercel project inspect` has NO --json flag (checked against CLI
+# 54.7.1; no vercel command does), and its human-readable output is not a contract worth parsing.
+# An earlier version of this script called `vercel project inspect --json`, which the real CLI
+# rejects as an unknown option — so the check silently returned nothing, fell through to a
+# warning, and LINKED ANYWAY. It was verification theatre: it could never have caught anything.
+# Its tests passed only because the stub implemented a flag that does not exist.
+#
+# So there are exactly two honest paths, and neither of them is "warn and carry on":
+#
+#   VERCEL_TOKEN set -> ask the documented REST API (GET /v9/projects/{id}) and REFUSE on a
+#                       wrong answer. This is a real check.
+#   no token         -> we CANNOT verify. Say so, and make a HUMAN confirm they have looked,
+#                       because "I could not check" is not "it is fine". That is this repo's
+#                       first rule, and the old code broke it.
+VERCEL_API="https://api.vercel.com"
+ORG_ID="$(jq -r '.orgId // empty' .vercel/project.json)"
 
-       Someone has set an explicit production-branch override in the Vercel dashboard, and it
-       WINS over the repository default. Merges to '${ACTUAL}' would deploy to production.
+check_production_branch() { # echoes the branch, or "" if there is no override; returns 1 if it cannot ask
+  local url resp
+  url="${VERCEL_API}/v9/projects/${PROJECT_ID}"
+  [ -n "${ORG_ID}" ] && url="${url}?teamId=${ORG_ID}"
+  resp="$(curl --fail -sS -H "Authorization: Bearer ${VERCEL_TOKEN}" "${url}" 2>/dev/null)" || return 1
+  printf '%s' "${resp}" | jq -e . >/dev/null 2>&1 || return 1     # not JSON -> we did not get an answer
+  printf '%s' "${resp}" | jq -r '.link.productionBranch // empty'
+}
 
-       There is NO supported API to change this, so you must fix it by hand:
+if [ -n "${VERCEL_TOKEN:-}" ]; then
+  if ACTUAL="$(check_production_branch)"; then
+    if [ -z "${ACTUAL}" ]; then
+      info "Vercel has no productionBranch override — it inherits the default branch ('${PROD_BRANCH}'). Verified."
+    elif [ "${ACTUAL}" = "${PROD_BRANCH}" ]; then
+      info "Vercel productionBranch is explicitly '${ACTUAL}'. Verified."
+    else
+      die "Vercel's production branch is '${ACTUAL}', not '${PROD_BRANCH}'.
+
+       An explicit production-branch override is set in the Vercel dashboard, and it WINS over the
+       repository default. Merges to '${ACTUAL}' would deploy to PRODUCTION.
+
+       There is NO supported API to change this, so fix it by hand:
          Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking
        Set it to '${PROD_BRANCH}', then re-run this script to confirm."
+    fi
+  else
+    die "VERCEL_TOKEN is set but the Vercel API would not answer (auth? network? rate limit?).
+
+       Refusing to finish: a failure to verify is not a verified pass. Fix the cause, or unset
+       VERCEL_TOKEN to take the manual-confirmation path instead."
   fi
 else
-  # Could not ask. Say so plainly — do not print a green tick over an unknown.
-  warn ""
-  warn "COULD NOT VERIFY Vercel's production branch (the CLI would not report it)."
-  warn "  The repo default branch is '${PROD_BRANCH}', so Vercel SHOULD inherit it — but an"
-  warn "  explicit override set in the dashboard would win, and we could not check for one."
-  warn "  Confirm by hand before enabling any deploys:"
-  warn "    Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking"
-  warn ""
+  # No token: we genuinely cannot check. Do NOT print a green tick over an unknown, and do NOT
+  # simply warn and exit 0 — a warning nobody actions is how an inert control ships. Make the
+  # human look, and make them say so.
+  printf '\n'
+  warn "CANNOT VERIFY Vercel's production branch from here."
+  warn "  The Vercel CLI cannot report it (no command emits JSON), and there is no VERCEL_TOKEN set."
+  warn "  The repo default branch is '${PROD_BRANCH}', so Vercel SHOULD inherit it — but an explicit"
+  warn "  override set in the dashboard WINS, and only you can see whether one exists."
+  printf '\n'
+  printf '  Open:  Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking\n'
+  printf '  It must say: %s\n\n' "${PROD_BRANCH}"
+  printf 'Type the production branch you see there (anything else aborts): '
+  IFS= read -r seen || seen=""
+  if [ "${seen}" != "${PROD_BRANCH}" ]; then
+    die "you entered '${seen:-<nothing>}', not '${PROD_BRANCH}'.
+
+       The repo is LINKED but its production branch is not confirmed. Do NOT enable any deploys
+       until Branch Tracking says '${PROD_BRANCH}' — otherwise merges to '${seen:-that branch}'
+       would go straight to production. Fix it in the dashboard and re-run this script.
+
+       (Nothing is deploying: vercel.json still has deploymentEnabled: false.)"
+  fi
+  info "production branch confirmed as '${PROD_BRANCH}' by you (not machine-verified)"
 fi
 
 cat <<EOF

@@ -1630,7 +1630,9 @@ and whether it passed, with the command output that proves it. Commit on a `docs
 
 Not tasks — they cannot be executed on the Free plan. Do them the day Avenue-Z upgrades:
 
-1. `gh auth refresh -h github.com -s admin:org`, then `./scripts/apply-rulesets.sh --org`.
+1. `gh auth refresh -h github.com -s admin:org`, then `./scripts/apply-org-ruleset.sh --dry-run`
+   and, once the plan looks right, `./scripts/apply-org-ruleset.sh` (it will make you type a
+   challenge phrase — there is no `--yes`, and it cannot run unattended).
 2. **Answer open question 1:** does a repo creator in Avenue-Z actually receive the Admin role?
 3. **Answer open question 2:** does a repo-level bypass actor survive an org-level ruleset, or does the
    org ruleset outrank it? This determines whether the emergency-bypass design works at all.

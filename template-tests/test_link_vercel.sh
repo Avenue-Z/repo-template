@@ -45,13 +45,20 @@ make_stubs() { # <default-branch> <production-branch-or-empty>
 #!/usr/bin/env bash
 echo "vercel \$*" >> "${VERCEL_LOG}"
 case "\$*" in
-  whoami*)          echo "paul@avenuez.com" ;;
-  link*)            mkdir -p .vercel; echo '{"projectId":"prj_test123","orgId":"team_test"}' > .vercel/project.json ;;
-  "project inspect"*) echo '${inspect_json}' ;;
-  deploy*)          echo "FAKE VERCEL: deploy was invoked!" >&2; exit 0 ;;
-  *)                echo "fake vercel: unexpected: \$*" >&2; exit 1 ;;
+  whoami*)  echo "paul@avenuez.com" ;;
+  link*)    mkdir -p .vercel; echo '{"projectId":"prj_test123","orgId":"team_test"}' > .vercel/project.json ;;
+  deploy*)  echo "FAKE VERCEL: deploy was invoked!" >&2; exit 0 ;;
+  *)        echo "fake vercel: unexpected: \$*" >&2; exit 1 ;;
 esac
 STUBEOF
+  # The production-branch check goes over the REST API (the CLI cannot answer — no --json), so the
+  # thing to stub is curl, not `vercel project inspect`.
+  cat > "${STUB}/curl" <<STUBEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${VERCEL_LOG}"
+echo '${inspect_json}'
+STUBEOF
+  chmod +x "${STUB}/curl"
   cat > "${STUB}/gh" <<STUBEOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -78,8 +85,13 @@ linked()    { grep -q '^vercel link'   "${VERCEL_LOG}" 2>/dev/null; }
 # below — every "it refuses to X" assertion would then pass for the WRONG REASON, proving only
 # that the TTY guard works. Run it over a real pty so the refusals are proven by the actual
 # default-branch / deploys-off / production-branch checks.
-run_linked() { # -> sets $out, returns the script's exit code
-  out="$(pty_run "" "cd '${WORK}/repo' && PATH='${STUB}:'\"\$PATH\" VERCEL_LOG='${VERCEL_LOG}' ./scripts/link-vercel.sh")"
+run_linked() { # -> sets $out, returns the script's exit code. No VERCEL_TOKEN: manual-confirm path.
+  local typed="${1:-main}"     # what the human types when asked for the production branch
+  out="$(pty_run "${typed}" "cd '${WORK}/repo' && PATH='${STUB}:'\"\$PATH\" VERCEL_LOG='${VERCEL_LOG}' ./scripts/link-vercel.sh")"
+}
+
+run_linked_token() { # -> sets $out. VERCEL_TOKEN set: the REST-API path, no human prompt.
+  out="$(pty_run "" "cd '${WORK}/repo' && PATH='${STUB}:'\"\$PATH\" VERCEL_LOG='${VERCEL_LOG}' VERCEL_TOKEN=tok_test ./scripts/link-vercel.sh")"
 }
 
 DEPLOYS_OFF='{"git":{"deploymentEnabled":false}}'
@@ -143,11 +155,17 @@ if linked; then fail "it linked anyway"; else pass "nothing was linked"; fi
 
 # ---------------------------------------------------------------------------------------
 # An explicit dashboard override WINS over the repo default, so verifying the default is not
-# enough — we must ask Vercel what it actually thinks, and refuse a wrong answer.
-echo "link-vercel: REFUSES when Vercel has an explicit production-branch override that is not 'main'"
+# enough. The CLI CANNOT report it (no vercel command has --json — see the contract test at the
+# bottom), so the only real check is the documented REST API, behind VERCEL_TOKEN.
+#
+# The previous version of this script called `vercel project inspect --json`, which the real CLI
+# REJECTS as an unknown option. It silently returned nothing, fell through to a warning, and linked
+# anyway — a check that could never catch anything. These tests passed because the stub implemented
+# a flag that does not exist. That is why the contract test below exists.
+echo "link-vercel: with VERCEL_TOKEN — REFUSES a production-branch override that is not 'main'"
 make_stubs "main" "dev"         # repo default is fine, but Vercel is overridden to dev
 setup_repo "$DEPLOYS_OFF"
-if run_linked; then
+if run_linked_token; then
   fail "accepted a Vercel production-branch override of 'dev'. Output: ${out}"
 else
   pass "refuses when Vercel's productionBranch override is 'dev'"
@@ -155,19 +173,45 @@ fi
 out_ovr="$out"
 assert_match "names the wrong branch" "production branch is 'dev'" "$out_ovr"
 assert_match "says there is no API to fix it, so do it by hand" 'NO supported API' "$out_ovr"
+assert_match "actually asked the REST API" 'api\.vercel\.com/v9/projects' "$(cat "${VERCEL_LOG}")"
 if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
-# ---------------------------------------------------------------------------------------
-echo "link-vercel: an explicit production override of exactly 'main' is accepted"
+echo "link-vercel: with VERCEL_TOKEN — an override of exactly 'main' is accepted"
 make_stubs "main" "main"
 setup_repo "$DEPLOYS_OFF"
-if run_linked; then
+if run_linked_token; then
   pass "accepts an explicit productionBranch of 'main'"
 else
   fail "should accept productionBranch=main. Output: ${out}"
 fi
-out_ok="$out"
-assert_match "reports it verified the explicit override" "explicitly 'main'" "$out_ok"
+assert_match "reports it VERIFIED (machine-checked, not asserted)" "explicitly 'main'. Verified" "$out"
+
+# ---------------------------------------------------------------------------------------
+# NO TOKEN: we genuinely cannot check. The old code WARNED and exited 0 — an inert control. Now a
+# human must look at the dashboard and type what they see. "I could not check" is not "it is fine".
+echo "link-vercel: without VERCEL_TOKEN — a human must confirm the production branch"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_OFF"
+if run_linked "main"; then
+  pass "typing 'main' (what the dashboard shows) completes the link"
+else
+  fail "typing 'main' should succeed. Output: ${out}"
+fi
+assert_match "admits it could not machine-verify" 'CANNOT VERIFY' "$out"
+assert_match "says the confirmation is human, not machine" 'not machine-verified' "$out"
+assert_nomatch "never claims it verified anything itself" 'productionBranch is explicitly' "$out"
+
+echo "link-vercel: without VERCEL_TOKEN — typing anything but 'main' ABORTS (it does not just warn)"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_OFF"
+if run_linked "dev"; then
+  fail "the human said the dashboard shows 'dev' and the script exited 0 anyway — that is the inert warn-and-carry-on this fix removes. Output: ${out}"
+else
+  pass "a production branch of 'dev' reported by the human is fatal"
+fi
+assert_match "warns not to enable deploys" 'Do NOT enable any deploys' "$out"
+assert_match "reassures nothing is deploying yet" 'deploymentEnabled: false' "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
 # ---------------------------------------------------------------------------------------
 echo "link-vercel: --dry-run checks everything and links NOTHING"
@@ -180,5 +224,59 @@ else
 fi
 if linked;   then fail "--dry-run LINKED";   else pass "--dry-run linked nothing"; fi
 if deployed; then fail "--dry-run DEPLOYED"; else pass "--dry-run deployed nothing"; fi
+
+# ---------------------------------------------------------------------------------------
+# CONTRACT TEST — does the REAL Vercel CLI actually support what this script invokes?
+#
+# THIS IS THE TEST THAT WAS MISSING, AND IT IS THE POINT OF THIS FILE.
+#
+# Every test above drives a STUB. A stub proves the script behaves correctly GIVEN ASSUMED CLI
+# BEHAVIOUR — it cannot prove the assumption. The previous version of this script called
+# `vercel project inspect --json`, a flag that DOES NOT EXIST. The real CLI rejects it, so the
+# production-branch check silently returned nothing, fell through to a warning, and linked anyway:
+# a control that could never once have fired. Every stub test passed, because the stub implemented
+# the fiction.
+#
+# So: assert the script's assumptions against the CLI that is actually installed. Skipped (not
+# failed) when the CLI is absent, so the suite still runs on a machine without it — but on any
+# machine that HAS vercel, a drifted or invented flag fails here instead of in production.
+echo "link-vercel: CONTRACT — the real Vercel CLI supports what the script invokes"
+if ! command -v vercel >/dev/null 2>&1; then
+  echo "  SKIP  the Vercel CLI is not installed — cannot check the script's assumptions against reality"
+else
+  # 1. Every `vercel <subcommand>` the script calls must exist.
+  #    Detect by OUTPUT, not exit code: `vercel link --help` prints perfectly good help and then
+  #    exits 2. An exit-code check would have failed a subcommand that plainly works. The banner
+  #    line ("▲ vercel <sub>") only appears for a real subcommand — verified that a bogus one does
+  #    not produce it, so this check discriminates rather than passing on everything.
+  #    Capture FIRST, then match. `set -o pipefail` is on, and `vercel link --help` exits 2 while
+  #    printing perfectly good help — piping it straight into grep makes the pipeline inherit that
+  #    2 and the check fails on a subcommand that plainly works.
+  for sub in whoami link; do
+    help_out="$(vercel "$sub" --help 2>&1 || true)"
+    if grep -q "vercel ${sub}" <<<"$help_out"; then
+      pass "the real CLI has 'vercel $sub'"
+    else
+      fail "the script calls 'vercel $sub', but the installed CLI does not support it"
+    fi
+  done
+
+  # 2. The script must NOT depend on a --json flag from any vercel command, because none has one.
+  #    This is the exact assumption that was false. If a future Vercel adds --json, this test fails
+  #    loudly and someone can simplify the script — which is the right way to find out.
+  if grep -qE '^[^#]*vercel [a-z ]+--json' "$SCRIPT"; then
+    fail "the script expects a vercel --json flag. No vercel command emits JSON — this is how the production-branch check silently became a no-op before."
+  else
+    pass "the script does not rely on a vercel --json flag (no vercel command has one)"
+  fi
+
+  # 3. Belt and braces: confirm the CLI really has no --json on the command someone would reach for.
+  inspect_help="$(vercel project inspect --help 2>&1 || true)"
+  if grep -q -- '--json' <<<"$inspect_help"; then
+    fail "'vercel project inspect' NOW supports --json — the REST-API workaround in this script can be simplified, and this test should be updated"
+  else
+    pass "confirmed: 'vercel project inspect' still has no --json (the REST-API path is still required)"
+  fi
+fi
 
 finish

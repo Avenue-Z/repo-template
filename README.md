@@ -38,7 +38,16 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
 ## Repo setup scripts (template-derived repos)
 
 - `scripts/init-repo.sh <python|node|next> [--team <slug>]` — selects the stack and creates
-  `dev`/`staging`/`main`. **`--team` changes GitHub permissions:** if the named team exists but
+  `dev`/`staging`/`main`. **Run it from `dev`:** the repo's default branch is `main`, so a fresh
+  "Use this template" copy lands you on `main` and the script refuses to run (it cuts `staging` and
+  `main` *from* `dev`). Start with:
+
+      git checkout -b dev
+      ./scripts/init-repo.sh <python|node|next>
+
+  The default branch is `main` on purpose — Vercel and most tooling take the **production** branch
+  from the repository default, so a repo defaulting to `dev` would deploy every merged PR straight
+  to production. See `CONTRIBUTING.md`. **`--team` changes GitHub permissions:** if the named team exists but
   lacks write access to this repo, the script **grants it push (write) access**
   (`PUT orgs/Avenue-Z/teams/<slug>/repos/<owner>/<repo>`) before writing `.github/CODEOWNERS`.
   It does this rather than merely warning, because GitHub *silently ignores* a CODEOWNERS entry

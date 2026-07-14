@@ -33,6 +33,32 @@ else
 fi
 assert_nomatch "no --exit-code 0 anywhere (that would make every finding a pass)" '[-]-exit-code +0' "$wf"
 
+# ---------------------------------------------------------------------------------------
+# SCOPE. `gitleaks detect` with no --log-opts scans EVERY commit in the repo, not the change
+# under review. So one secret committed once — even one long since deleted AND rotated — fails
+# every subsequent PR forever, however innocent: the repo becomes permanently unmergeable, and
+# rotating the key (the remedy SECURITY.md prescribes) does not clear it. Only a history rewrite
+# does. Verified: an untouched feature branch off a history containing a since-removed token
+# exits 1 under the unscoped command.
+#
+# The PR path must therefore scan the PR's own range; the push path keeps the full-history audit.
+echo "secret-scan: a PR must scan the commits it ADDS, not the whole repo history"
+assert_match "the PR path scopes the scan with --log-opts" '[-]-log-opts' "$wf"
+if grep -qE '[-]-log-opts "origin/\$\{BASE_REF\}\.\.HEAD"' <<<"$wf"; then
+  pass "the scope is exactly the PR range (origin/\${BASE_REF}..HEAD)"
+else
+  fail "the PR scan must be scoped to 'origin/\${BASE_REF}..HEAD' — an unscoped detect blocks every future PR once any secret enters history"
+fi
+# base_ref is attacker-influenced input, and ${{ }} inside `run:` is textual substitution, not a
+# shell variable — a ref name is not safe to splice into the script body.
+if grep -qE 'BASE_REF: \$\{\{ *github\.base_ref *\}\}' <<<"$wf"; then
+  pass "base_ref reaches the script through env:, not interpolated into run:"
+else
+  fail "github.base_ref must be passed via env: (BASE_REF), never interpolated directly into a run: block"
+fi
+# The full scan must survive for pushes — that is where a repo-wide audit belongs.
+assert_match "fetch-depth: 0 retained (origin/<base> must resolve, and push scans all history)" 'fetch-depth: *0' "$wf"
+
 echo "secret-scan: the download must be verified before it is run as root"
 assert_match "downloads a checksums file" 'checksums\.txt' "$wf"
 assert_match "verifies the checksum with sha256sum -c" 'sha256sum .*-c ' "$wf"

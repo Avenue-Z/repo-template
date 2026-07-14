@@ -15,7 +15,9 @@ unrecognized branch prefix**. Need a new prefix? Add it to the `case` statement 
 The guard reads its decision script from the **base** branch, so a PR cannot rewrite the rule it
 is being judged against. It cannot, however, defend against a PR that edits
 `.github/workflows/guard-base-branch.yml` itself — Actions runs the workflow file from the PR's
-head. Treat `.github/` as code-owned and review changes to it. See `SECURITY.md`.
+head, and **nothing in this repo's configuration forces anyone to review that.** `CODEOWNERS`
+routes such a PR to a reviewer; it does not require their approval. Review any PR touching
+`.github/` by convention, and read `SECURITY.md` before assuming you are protected from one.
 
 ## Never push directly to main
 

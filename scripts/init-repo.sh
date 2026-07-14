@@ -220,13 +220,35 @@ resolve_codeowners() {
 # still holds templates/ — branching early would leave all three heads carrying
 # dead files forever. Create-if-absent; never force-push.
 ensure_branches() {
-  local head; head="$(git rev-parse --abbrev-ref HEAD)"
+  local head head_sha; head="$(git rev-parse --abbrev-ref HEAD)"; head_sha="$(git rev-parse HEAD)"
   for b in staging main; do
-    if git rev-parse --verify -q "${b}" >/dev/null; then
-      info "branch ${b} already exists — leaving it alone (re-run repairs absence, not drift)"
-    else
+    if ! git rev-parse --verify -q "${b}" >/dev/null; then
       git branch "${b}" "${head}"
       info "created ${b} from ${head}"
+    elif [ "$(git rev-parse "${b}")" = "${head_sha}" ]; then
+      info "branch ${b} is already at ${head} — nothing to do"
+    elif git merge-base --is-ancestor "${b}" "${head_sha}"; then
+      # STRICTLY BEHIND — fast-forward it. This is not drift, and treating it as drift was a bug.
+      #
+      # On a FIRST run, `main` exists by construction: "Use this template" hands you a repo whose
+      # only branch is main, so the documented path (`git checkout -b dev`) leaves a local main
+      # sitting one commit behind dev. Refusing to touch it left main — the PRODUCTION branch, and
+      # GitHub's default — pointing at the RAW UNINITIALIZED TEMPLATE: still carrying templates/,
+      # template-tests/, and the template's own spec and plan. The script then printed "Done."
+      # That defeats the entire reason this function runs after the cleanup commit rather than
+      # before it (see the header above), and it did so silently.
+      #
+      # Fast-forwarding is safe precisely BECAUSE the branch is an ancestor of HEAD: no commit
+      # that exists only on ${b} can be lost, because there is no such commit. A branch that has
+      # genuinely diverged is a different animal and is left alone below.
+      git branch -f "${b}" "${head_sha}"
+      info "fast-forwarded ${b} to ${head} (it was behind — on a first run main still holds the uninitialized template)"
+    else
+      # DIVERGED — ${b} carries commits that ${head} does not. Fast-forwarding would discard them.
+      # Re-run repairs absence, not drift: reconcile this with a PR, not with a force-push.
+      warn "branch ${b} has DIVERGED from ${head} — leaving it alone."
+      warn "  It holds commits ${head} does not, so this script will not move it (that would drop them)."
+      warn "  Reconcile it by opening a PR, not by re-running this script."
     fi
   done
   if [ "${PUSH}" -eq 1 ]; then

@@ -107,8 +107,10 @@ review, not by CI: **`.github/` must be code-owned**, which is what makes `--tea
 in Avenue-Z, ~64 of them, none generated from this template and none carrying
 `guard-base-branch.yml` or `secret-scan.yml`. A required check that never reports does not fail a
 PR; it hangs it **pending forever**. With `enforcement: active` and `bypass_actors: []`, a single
-`apply-rulesets.sh --org` on Team-upgrade day would take direct push **and** merge away from every
-repo in the org at once — while the script printed success. It would also contradict this spec's own
+org-wide apply on Team-upgrade day would take direct push **and** merge away from every
+repo in the org at once — while the script printed success. (This risk is now defended twice over:
+the org apply lives in its own script, `apply-org-ruleset.sh`, which **refuses** to apply a ruleset
+declaring required status checks at all.) It would also contradict this spec's own
 "out of scope: retrofitting the six reference repos (or the other 54)". So `org-ruleset.json` ships
 only what is safe on a repo with **no CI at all** — `deletion`, `non_fast_forward`, and
 `pull_request` with `required_approving_review_count: 0` — and required checks stay in

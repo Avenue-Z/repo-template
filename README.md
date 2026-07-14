@@ -42,10 +42,17 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
   lacks write access to this repo, the script **grants it push (write) access**
   (`PUT orgs/Avenue-Z/teams/<slug>/repos/<owner>/<repo>`) before writing `.github/CODEOWNERS`.
   It does this rather than merely warning, because GitHub *silently ignores* a CODEOWNERS entry
-  naming a team without write access — a warning nobody actions leaves an inert file that looks
-  like enforced review and enforces nothing. Granting needs repo-admin or org-owner rights; if
-  it fails, the script refuses to write CODEOWNERS at all. Omit `--team` and no permissions are
-  touched.
-- `scripts/apply-rulesets.sh [--org [--yes]] [--dry-run]` — applies branch protection where the
-  plan allows and prints what it skipped. `--org` targets **every repo in the org**; it lists
-  them and requires an explicit confirmation first.
+  naming a team without write access — a warning nobody actions leaves a file that does not even
+  route a reviewer. Granting needs repo-admin or org-owner rights; if it fails, the script refuses
+  to write CODEOWNERS at all. Omit `--team` and no permissions are touched.
+  **CODEOWNERS routes reviewers; it does not require their approval** — the ruleset ships
+  `required_approving_review_count: 0`. See `SECURITY.md` before relying on it as a control.
+- `scripts/apply-rulesets.sh [--dry-run]` — applies branch protection **to this repo**, where the
+  plan allows it, and prints what it skipped. Touches nothing else.
+- `scripts/apply-org-ruleset.sh [--dry-run]` — applies the org ruleset to **every repository in
+  Avenue-Z**. Deliberately hard to run, and separate from the command above so that it is not one
+  flag away from it: there is **no `--yes` and no non-interactive path**, so it cannot run from CI
+  or be replayed out of shell history — you must type a challenge phrase naming the live repo
+  count. It also **refuses outright** to apply a ruleset that declares required status checks,
+  since almost no repo in the org ships those workflows and a required check that never reports
+  hangs every PR pending forever.

@@ -37,7 +37,7 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
 
 ## Repo setup scripts (template-derived repos)
 
-- `scripts/init-repo.sh <python|node> [--team <slug>]` — selects the stack and creates
+- `scripts/init-repo.sh <python|node|next> [--team <slug>]` — selects the stack and creates
   `dev`/`staging`/`main`. **`--team` changes GitHub permissions:** if the named team exists but
   lacks write access to this repo, the script **grants it push (write) access**
   (`PUT orgs/Avenue-Z/teams/<slug>/repos/<owner>/<repo>`) before writing `.github/CODEOWNERS`.
@@ -49,6 +49,12 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
   `required_approving_review_count: 0`. See `SECURITY.md` before relying on it as a control.
 - `scripts/apply-rulesets.sh [--dry-run]` — applies branch protection **to this repo**, where the
   plan allows it, and prints what it skipped. Touches nothing else.
+- `scripts/link-vercel.sh [--dry-run]` — (`next` stack) links this repo to a Vercel project.
+  **Linking is easy; deploying is a reviewed code change.** It never runs `vercel deploy`, and it
+  refuses to link unless the default branch is `main` — Vercel takes its **production** branch from
+  the repository default branch, so a repo defaulting to `dev` would deploy every merged PR straight
+  to production. `vercel.json` ships `"deploymentEnabled": false`, so a freshly linked project
+  deploys **nothing**. Turning a branch on means editing `vercel.json`, which means a PR.
 - `scripts/apply-org-ruleset.sh [--dry-run]` — applies the org ruleset to **every repository in
   Avenue-Z**. Deliberately hard to run, and separate from the command above so that it is not one
   flag away from it: there is **no `--yes` and no non-interactive path**, so it cannot run from CI

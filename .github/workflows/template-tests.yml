@@ -39,6 +39,17 @@ jobs:
             echo "ok: $t"
           done
 
+      # test_init_repo.sh drives scripts/init-repo.sh for real, and that script makes a git COMMIT.
+      # A fresh runner has no user.name/user.email, so the commit dies with "empty ident name" and
+      # the whole suite crashes — not a failed assertion, a crash. It passed on my machine only
+      # because my git happened to be configured. This is an environment assumption the suite could
+      # never have caught until it ran somewhere that wasn't my laptop.
+      - name: give git an identity (init-repo.sh commits)
+        run: |
+          set -euo pipefail
+          git config --global user.name  "template-tests"
+          git config --global user.email "template-tests@avenuez.com"
+
       - name: run the template's own test suite
         env:
           # Several suites drive a fake `gh` on PATH. Two do NOT: test_init_repo.sh deliberately

@@ -33,9 +33,21 @@ done
 # nor the template's own 500-line spec/plan. Assert on the working tree AND on every branch,
 # because a head that still carries them is the same dead weight one commit away.
 assert_no_dir  "template-tests/ removed from working tree" template-tests
+# The WORKFLOW that runs that suite must go too. If it stayed, a generated repo would ship a job
+# that runs a directory init-repo just deleted — and the moment anyone added `template-tests` to
+# that repo's required checks, it would never report and hang every PR PENDING FOREVER.
+assert_no_file "template-tests.yml workflow removed (it runs a suite that no longer exists here)" .github/workflows/template-tests.yml
+# The workflows a generated repo SHOULD keep must survive the cull.
+assert_file    "guard-base-branch.yml survived" .github/workflows/guard-base-branch.yml
+assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
 assert_no_file "template's spec removed" docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md
 assert_no_file "template's plan removed" docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md
 for b in dev staging main; do
+  if git ls-tree -r --name-only "$b" | grep -qE '^\.github/workflows/template-tests\.yml$'; then
+    fail "branch $b still carries .github/workflows/template-tests.yml"
+  else
+    pass "branch $b is free of the template-tests workflow"
+  fi
   if git ls-tree -r --name-only "$b" | grep -qE '^template-tests/|^docs/superpowers/(specs|plans)/2026-07-13-'; then
     fail "branch $b still carries the template's self-tests or its own spec/plan"
   else

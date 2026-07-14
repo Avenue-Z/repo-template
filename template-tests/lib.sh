@@ -15,7 +15,19 @@ skip() { printf '  SKIP %s\n' "$1"; }
 # is repo-scoped and cannot read org details, so those blocks are skipped there rather than failing
 # a run for a reason that has nothing to do with the change under test. Locally, with a real gh
 # login, they run for real.
-have_org_access() { gh api orgs/Avenue-Z -q .plan.name >/dev/null 2>&1; }
+# An EXIT CODE IS NOT AN ANSWER. `gh api orgs/Avenue-Z -q .plan.name` exits 0 for a repo-scoped
+# CI token and returns an EMPTY plan — the token can reach the org endpoint but cannot see its
+# details. Checking only the exit status therefore reports "we have org access" when we do not,
+# the guarded block runs, and apply-rulesets.sh correctly dies with "the plan came back empty".
+#
+# That is the exact failure apply-rulesets.sh itself was hardened against — laundering "I could
+# not ask" into a value — and I reproduced it here in the guard meant to prevent it. So: demand a
+# real, non-empty, non-null plan. Anything less is "I could not ask".
+have_org_access() {
+  local plan
+  plan="$(gh api orgs/Avenue-Z -q .plan.name 2>/dev/null)" || return 1
+  [ -n "${plan}" ] && [ "${plan}" != "null" ]
+}
 
 assert_eq() { # <expected> <actual> <msg>
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 (expected '$1', got '$2')"; fi

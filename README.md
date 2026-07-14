@@ -13,6 +13,17 @@
     pipx install pre-commit               # or: brew install pre-commit
     pre-commit install                    # installs the gitleaks hook
 
+Avenue Z Claude Code skills (once per machine, not per repo):
+
+    /plugin marketplace add Avenue-Z/claude-marketplace
+    /plugin install setup@avenue-z
+
+`setup` then auto-installs every Avenue Z plugin at **user scope**, so they work in all your repos
+and keep themselves up to date. It is deliberately NOT wired into `scripts/init-repo.sh`: plugins
+are a per-developer, per-machine concern, and init-repo runs once, for one person, on the day the
+repo is created — it would do nothing for whoever clones this next month. (`.claude/` is gitignored
+for the same reason: shared agent config lives in the marketplace, not in product repos.)
+
 `pre-commit` is installed standalone rather than as a project dependency so the same line works
 on both stacks. (The Python template also ships it in its `dev` extras, so
 `pip install -e ".[dev]"` gets you it for free.)

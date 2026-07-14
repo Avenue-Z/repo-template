@@ -160,19 +160,50 @@ info "linked to Vercel project ${PROJECT_ID}"
 VERCEL_API="https://api.vercel.com"
 ORG_ID="$(jq -r '.orgId // empty' .vercel/project.json)"
 
-check_production_branch() { # echoes the branch, or "" if there is no override; returns 1 if it cannot ask
+# Verified against a live project (Vercel API, CLI 54.7.1): a git-connected project ALWAYS carries
+# a populated `.link.productionBranch` — it is the branch itself ("main"), not an "override" that is
+# absent when inherited. So an EMPTY value does not mean "inherits the default". It means `.link` is
+# null: the project is NOT CONNECTED TO A GIT REPOSITORY AT ALL. Treating that as "verified" is the
+# same warn-and-carry-on failure the --json bug had — it green-ticks an unknown. `vercel link` will
+# happily create such a project (answer "no" to "Detected a repository. Connect it to this project?").
+# So: no git link -> we have verified NOTHING -> refuse.
+NO_GIT_LINK="__no_git_link__"
+
+check_production_branch() { # echoes the branch, or NO_GIT_LINK; returns 1 if it cannot ask
   local url resp
   url="${VERCEL_API}/v9/projects/${PROJECT_ID}"
   [ -n "${ORG_ID}" ] && url="${url}?teamId=${ORG_ID}"
   resp="$(curl --fail -sS -H "Authorization: Bearer ${VERCEL_TOKEN}" "${url}" 2>/dev/null)" || return 1
   printf '%s' "${resp}" | jq -e . >/dev/null 2>&1 || return 1     # not JSON -> we did not get an answer
+  if ! printf '%s' "${resp}" | jq -e '.link != null' >/dev/null 2>&1; then
+    printf '%s' "${NO_GIT_LINK}"
+    return 0
+  fi
   printf '%s' "${resp}" | jq -r '.link.productionBranch // empty'
 }
 
 if [ -n "${VERCEL_TOKEN:-}" ]; then
   if ACTUAL="$(check_production_branch)"; then
-    if [ -z "${ACTUAL}" ]; then
-      info "Vercel has no productionBranch override — it inherits the default branch ('${PROD_BRANCH}'). Verified."
+    if [ "${ACTUAL}" = "${NO_GIT_LINK}" ]; then
+      die "the Vercel project is not connected to any Git repository.
+
+       REFUSING TO FINISH. Vercel reports no Git link for this project, so it has NO production
+       branch to check — and nothing this script could verify. A project in this state deploys
+       from CLI uploads, not from your branches, so the entire branch-flow guarantee is absent.
+
+       This usually means 'vercel link' was answered with 'no' at:
+           'Detected a repository. Connect it to this project?'
+
+       Connect the repo (Vercel dashboard -> Project -> Settings -> Git), then re-run this script.
+
+       (Nothing is deploying: vercel.json still has deploymentEnabled: false.)"
+    elif [ -z "${ACTUAL}" ]; then
+      die "Vercel reports a Git link for this project but no production branch.
+
+       REFUSING TO FINISH. A failure to verify is not a verified pass. Every git-connected project
+       observed carries a populated productionBranch, so this response is one we do not understand
+       — and we will not green-tick what we cannot read. Check the project by hand:
+           Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking"
     elif [ "${ACTUAL}" = "${PROD_BRANCH}" ]; then
       info "Vercel productionBranch is explicitly '${ACTUAL}'. Verified."
     else

@@ -36,7 +36,15 @@ make_stubs() { # <default-branch> <production-branch-or-empty>
   # heredoc produced `""dev""` -> `productionBranch:dev`, which is INVALID JSON: jq then returned
   # empty, the script read that as "no override" and exited 0, and the refusal test passed while
   # proving nothing. An invalid fixture is a silently vacuous test.
-  if [ -n "${prod_branch}" ]; then
+  # NOGIT models what the REAL API returns for a project with no Git connection: `"link": null`.
+  # Verified against a live project — a git-connected project ALWAYS has a populated
+  # productionBranch, so `link:null` (NOT a null productionBranch) is the only way the script can
+  # see an empty value. The old fixture only ever produced `{"link":{"productionBranch":null}}`,
+  # a shape the real API does not emit for a linked project, so the no-git case went untested and
+  # the script green-ticked it as "no override — inherits the default branch. Verified."
+  if [ "${prod_branch}" = "NOGIT" ]; then
+    inspect_json='{"link":null}'
+  elif [ -n "${prod_branch}" ]; then
     inspect_json="{\"link\":{\"productionBranch\":\"${prod_branch}\"}}"
   else
     inspect_json='{"link":{"productionBranch":null}}'
@@ -174,6 +182,25 @@ out_ovr="$out"
 assert_match "names the wrong branch" "production branch is 'dev'" "$out_ovr"
 assert_match "says there is no API to fix it, so do it by hand" 'NO supported API' "$out_ovr"
 assert_match "actually asked the REST API" 'api\.vercel\.com/v9/projects' "$(cat "${VERCEL_LOG}")"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+# ---------------------------------------------------------------------------------------
+# A project with NO GIT CONNECTION has `"link": null`, so `.link.productionBranch // empty` is
+# EMPTY — the same empty the script used to read as "no override, inherits the default branch:
+# Verified." It is not. It is a project with no repo attached, deploying from CLI uploads rather
+# than from branches, where the branch-flow guarantee does not exist at all. `vercel link` creates
+# exactly this if you answer "no" to "Detected a repository. Connect it to this project?" —
+# observed against a real project, where the script printed "Verified." and exited 0.
+echo "link-vercel: with VERCEL_TOKEN — REFUSES a project with no Git connection (link:null)"
+make_stubs "main" "NOGIT"
+setup_repo "$DEPLOYS_OFF"
+if run_linked_token; then
+  fail "green-ticked a project with NO Git connection — 'I could not check' is not 'it is fine'. Output: ${out}"
+else
+  pass "refuses a Vercel project that is not connected to a Git repository"
+fi
+assert_match "says the project has no git repo" 'not connected to any Git repository' "$out"
+assert_nomatch "never claims it verified anything" 'Verified' "$out"
 if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
 echo "link-vercel: with VERCEL_TOKEN — an override of exactly 'main' is accepted"

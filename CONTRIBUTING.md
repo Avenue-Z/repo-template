@@ -35,8 +35,14 @@ write access to this repo, it **grants the team push (write) access** on GitHub.
 permission change, made because GitHub silently ignores a CODEOWNERS entry naming a team without
 write access. Omit `--team` if you do not want it.
 
-`scripts/apply-rulesets.sh --org` applies a ruleset to **every repository in the org**. It lists
-them and demands an explicit `--yes` first.
+`scripts/apply-rulesets.sh` only ever touches **the repo you are standing in**.
+
+The org-wide apply is a **separate script**, `scripts/apply-org-ruleset.sh`, and it is meant to be
+awkward. It applies a ruleset to **every repository in Avenue-Z**, so it has no `--yes`, no
+environment-variable override, and no non-interactive path at all — it cannot run from CI, and
+there is no one-liner to replay out of your shell history. It lists every repo it would hit and
+makes you type a challenge phrase that names the live repo count. If you find yourself wanting to
+automate it, that is the feeling the design is for.
 
 ## Commits
 

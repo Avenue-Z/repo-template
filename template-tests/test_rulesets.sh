@@ -69,7 +69,7 @@ fi
 # repo in Avenue-Z, ~64 of them, of which none was generated from this template and none has
 # guard-base-branch.yml or secret-scan.yml. A required check that never reports does not fail
 # a PR; it hangs it PENDING FOREVER. With enforcement:active and bypass_actors:[], one
-# `apply-rulesets.sh --org` would take push AND merge away from every repo in the org at once.
+# `apply-org-ruleset.sh` would take push AND merge away from every repo in the org at once.
 #
 # This is the assertion that keeps that landmine from being re-laid. Required checks are
 # per-repo (repo-ruleset.json), applied only to repos that ship the workflows.

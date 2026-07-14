@@ -22,13 +22,38 @@ assert_nomatch "'ci' is NOT listed as a required status check" 'required: ci$' "
 assert_match   "'guard-base-branch' is listed as required" 'required: guard-base-branch' "$out"
 assert_match   "'secret-scan' is listed as required" 'required: secret-scan' "$out"
 
-echo "apply-rulesets: --org honest reporting (org-level rulesets need GitHub Team)"
+# ---------------------------------------------------------------------------------------
+# --org IS GONE FROM THIS SCRIPT, AND MUST STAY GONE.
+#
+# The org-wide apply used to live here behind `--org` — one flag away from the command you run on
+# every new repo. That adjacency WAS the vulnerability: a fat-finger, a stray tab-complete, or an
+# Up-arrow through shell history was all that separated "protect my repo" from "rewrite protection
+# on all ~64 repos in Avenue-Z". It now lives in scripts/apply-org-ruleset.sh.
+#
+# These assertions exist so nobody re-adds the flag here for convenience. Convenience is exactly
+# what we removed.
+echo "apply-rulesets: --org must NOT be reachable from this script"
 if out_org=$(./scripts/apply-rulesets.sh --org --dry-run 2>&1); then
-  pass "--org --dry-run exits 0"
+  fail "--org still works on apply-rulesets.sh — the org-wide apply must not be one flag away from the routine command"
 else
-  fail "--org --dry-run should exit 0 even when Team is required"
+  pass "--org is refused by apply-rulesets.sh"
 fi
-assert_match "--org explains the Team/Free limitation" 'team|free' "$out_org"
+assert_match "points the operator at the separate org script" 'apply-org-ruleset\.sh' "$out_org"
+assert_nomatch "does not apply anything" 'created new org ruleset|updated existing org ruleset' "$out_org"
+
+echo "apply-rulesets: --yes must NOT exist here either"
+if out_yes=$(./scripts/apply-rulesets.sh --yes --dry-run 2>&1); then
+  fail "--yes is still accepted — it is a consent bypass and must not exist"
+else
+  pass "--yes is refused by apply-rulesets.sh"
+fi
+
+# The script must not even CONTAIN the org-apply code any more. A flag guard that sits in front of
+# a still-present POST to orgs/<org>/rulesets is one edit away from being reachable again.
+echo "apply-rulesets: the org-apply code must be ABSENT, not merely guarded"
+src="$(cat scripts/apply-rulesets.sh)"
+assert_nomatch "no POST to orgs/<org>/rulesets anywhere in this script" 'orgs/\$\{ORG\}/rulesets' "$src"
+assert_nomatch "no ~ALL / org-repo enumeration left behind" 'orgs/\$\{ORG\}/repos' "$src"
 
 # ---------------------------------------------------------------------------------------
 # CRITERION 6 — the private + Free path must be HONEST.
@@ -132,54 +157,5 @@ else
 fi
 assert_match   "explains the lookup failure" 'cannot list existing rulesets' "$out_fail"
 assert_nomatch "never falls through to claiming it would create/POST a duplicate" 'would post|create new' "$out_fail"
-
-# ---------------------------------------------------------------------------------------
-# --org IS THE HIGHEST-BLAST-RADIUS CALL IN THIS REPO. It applies org-ruleset.json to EVERY
-# repo in Avenue-Z — ~64 of them, essentially none generated from this template. It must not
-# fire blind: it has to LIST the repos it would hit, SAY that a repo lacking a required check
-# becomes permanently unmergeable, and then require an affirmative --yes (or a typed 'y').
-#
-# The real-gh --org run above exits at the Free-plan check and never reaches any of this, so
-# drive it with a stub that reports Team.
-echo "apply-rulesets: --org lists the repos it would affect and names the unmergeable risk"
-cat > "${STUB}/gh" <<'STUBEOF'
-#!/usr/bin/env bash
-case "$*" in
-  *"orgs/Avenue-Z/repos"*)     printf 'ad-spend-pacing\ndrive-api-client\naivx-reports\n' ;;
-  *"orgs/Avenue-Z/rulesets"*)  echo '[]' ;;
-  *"orgs/Avenue-Z"*)           echo team ;;
-  *) echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
-esac
-STUBEOF
-chmod +x "${STUB}/gh"
-
-if out_org_dry=$(PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --org --dry-run </dev/null 2>&1); then
-  pass "--org --dry-run (Team plan) exits 0"
-else
-  fail "--org --dry-run (Team plan) should exit 0. Output: ${out_org_dry}"
-fi
-assert_match "lists the repos it would affect" 'ad-spend-pacing' "$out_org_dry"
-assert_match "counts them" 'EVERY repository in Avenue-Z' "$out_org_dry"
-assert_match "states how many" '3 of them' "$out_org_dry"
-assert_match "says a repo with no workflow for a required check hangs PENDING FOREVER" 'pending forever' "$out_org_dry"
-assert_match "says such a repo becomes unmergeable" 'unmergeable' "$out_org_dry"
-assert_match "explains that is why the org ruleset has no required checks" 'no required_status_checks' "$out_org_dry"
-
-echo "apply-rulesets: --org REFUSES to apply without an explicit confirmation"
-if out_org_noyes=$(PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --org </dev/null 2>&1); then
-  fail "--org applied to the whole org with no confirmation and no tty. Output: ${out_org_noyes}"
-else
-  pass "--org with no --yes and no tty refuses (non-zero exit)"
-fi
-assert_match   "tells the operator how to consent" '--yes' "$out_org_noyes"
-assert_nomatch "did not claim it created or updated anything" 'created new org ruleset|updated existing org ruleset' "$out_org_noyes"
-
-echo "apply-rulesets: --org --yes is the affirmative act that lets it apply"
-if out_org_yes=$(PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --org --yes </dev/null 2>&1); then
-  pass "--org --yes exits 0"
-else
-  fail "--org --yes should exit 0 against a stub. Output: ${out_org_yes}"
-fi
-assert_match "says it created the org ruleset" 'created new org ruleset' "$out_org_yes"
 
 finish

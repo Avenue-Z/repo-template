@@ -278,8 +278,13 @@ rm -rf "${STUB_403}"
 # test builds the single-branch layout by hand, because that is the one real users are handed.
 echo "init-repo: first run from a 'Use this template' copy (local main pre-exists, behind dev)"
 cd "${WORK}" && rm -rf repo8 && git clone -q "${REPO_ROOT}" repo8 && cd repo8
+# -B, not -b, for BOTH. `git clone` gives the clone one local branch: whichever one REPO_ROOT has
+# checked out. So `-b dev` fails with "a branch named 'dev' already exists" whenever the suite is
+# run from dev — and silently works when run from a feature branch. That made this test's result
+# depend on which branch the developer happened to be standing on, which is not a test at all.
+# -B forces the branch to the right commit either way, so the fixture is the same everywhere.
 git checkout -qB main                       # main: the only branch a template copy has
-git checkout -qb dev                        # the documented next step
+git checkout -qB dev                        # the documented next step
 ./scripts/init-repo.sh python --no-push >/dev/null 2>&1
 
 if git ls-tree -r --name-only main | grep -qE '^templates/|^template-tests/'; then

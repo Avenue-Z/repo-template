@@ -135,27 +135,43 @@ info "running 'vercel link' — pick the scope and project when prompted"
 vercel link || die "vercel link failed or was cancelled — nothing was linked."
 
 # vercel link writes ONE of two local formats, and which one is itself a signal:
-#   .vercel/project.json  -> single-project format; carries the projectId/orgId we need.
-#   .vercel/repo.json     -> multi-project format, written once the project is GIT-CONNECTED.
+#   .vercel/project.json  -> single-project format; carries projectId/orgId. This is what a PLAIN
+#                            `vercel link` writes — CAPTURED LIVE 2026-07-15 against a real
+#                            git-connected project, even after the CLI auto-connects the GitHub repo.
+#                            Git-connection does NOT change the local file to repo.json.
+#   .vercel/repo.json     -> multi-project format written by `vercel link --repo` (alpha). An earlier
+#                            version of this script believed git-connection itself wrote repo.json; it
+#                            does not — repo.json is a separate, explicit `--repo` choice. Its project
+#                            id lives at .projects[].id (NOT .projectId), the team at .projects[].orgId.
 #
-# We can read the first. We deliberately do NOT parse the second: its schema was never captured,
-# and this repo's rule is that guessing a shape is worse than stopping — the whole reason the
-# --json and link:null bugs existed. So an already-connected repo gets an HONEST refusal, not the
-# old misleading "vercel link reported success but project.json is missing", which was reachable
-# from this script's own "...re-run this script" advice and read like the tool had failed.
+# We read the id/orgId from whichever file is present. For repo.json we do so ONLY when it lists
+# exactly one project — the single-app shape this template produces, whose schema is now captured. A
+# repo.json with 0 or >1 projects has no single production branch to check, and picking one would be
+# exactly the shape-guess this script exists to refuse, so those still get an HONEST refusal. (The old
+# code refused EVERY repo.json, because its schema was uncaptured; now the single case is verifiable.)
 if [ -f .vercel/project.json ]; then
   PROJECT_ID="$(jq -r '.projectId // empty' .vercel/project.json)"
+  ORG_ID="$(jq -r '.orgId // empty' .vercel/project.json)"
   [ -n "${PROJECT_ID}" ] || die "could not read projectId from .vercel/project.json"
   info "linked to Vercel project ${PROJECT_ID}"
 elif [ -f .vercel/repo.json ]; then
-  die "this repo is already connected to Vercel (the multi-project .vercel/repo.json format).
+  PROJECT_COUNT="$(jq -r '.projects | length' .vercel/repo.json 2>/dev/null || echo 0)"
+  if [ "${PROJECT_COUNT}" = "1" ]; then
+    PROJECT_ID="$(jq -r '.projects[0].id // empty' .vercel/repo.json)"
+    ORG_ID="$(jq -r '.projects[0].orgId // empty' .vercel/repo.json)"
+    [ -n "${PROJECT_ID}" ] || die "could not read .projects[0].id from .vercel/repo.json"
+    info "already connected (single-project .vercel/repo.json) — Vercel project ${PROJECT_ID}"
+  else
+    die "this repo is connected via the multi-project .vercel/repo.json format, which lists ${PROJECT_COUNT} Vercel projects, not exactly one.
 
-       Re-running link on an already-connected repo is NOT yet supported here: repo.json's schema
-       is not handled, and guessing it is worse than stopping. Verify by hand instead —
+       Re-running link is only handled here for a SINGLE-project repo.json (this template is a single
+       app). With ${PROJECT_COUNT} projects there is no one production branch to check, and picking
+       one would be a guess — the exact failure this script refuses to make. Verify by hand instead —
          Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking
        must say '${PROD_BRANCH}'.
 
        (Nothing is deploying: vercel.json still has deploymentEnabled: false.)"
+  fi
 else
   die "vercel link reported success but wrote neither .vercel/project.json nor .vercel/repo.json.
        Refusing to claim the repo is linked when it cannot be shown to be."
@@ -181,7 +197,8 @@ fi
 #                       because "I could not check" is not "it is fine". That is this repo's
 #                       first rule, and the old code broke it.
 VERCEL_API="https://api.vercel.com"
-ORG_ID="$(jq -r '.orgId // empty' .vercel/project.json)"
+# PROJECT_ID and ORG_ID were read above from whichever local file `vercel link` wrote
+# (.vercel/project.json, or a single-project .vercel/repo.json) — see that block.
 
 # Verified against a live project (Vercel API, CLI 54.7.1): a git-connected project ALWAYS carries
 # a populated `.link.productionBranch` — it is the branch itself ("main"), not an "override" that is

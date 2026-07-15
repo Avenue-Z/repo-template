@@ -354,9 +354,25 @@ rm -rf templates template-tests
 rm -f .github/workflows/template-tests.yml
 info "removed templates/, template-tests/ and its workflow (the template's own self-tests)"
 
-rm -f docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md \
-      docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md
-info "removed the template's own spec and plan"
+# Strip every design doc the TEMPLATE wrote about ITSELF. Match by pattern, not by listing today's
+# filenames: enumerating them is exactly why 2026-07-14 (and this feature's own 2026-07-15 spec) once
+# shipped into generated repos untouched. The generated repo keeps the empty specs/ and plans/ dirs
+# (their README + .gitkeep) for its OWN docs — of which a fresh repo has none — so removing every
+# *.md that is not a README here is safe, and cannot rot when the next template spec is added.
+find docs/superpowers/specs docs/superpowers/plans -maxdepth 1 -type f -name '*.md' ! -name 'README.md' -delete
+info "removed the template's own design docs (specs + plans)"
+
+# The front door is template-only. README.md is the TEMPLATE's GitHub landing page; the seed a
+# generated repo starts from lives in README.repo.tmpl — a .tmpl suffix so GitHub renders the front
+# door and not the seed, the same reason CODEOWNERS.tmpl is not named CODEOWNERS. Swap the seed in
+# over the front door. Verify it is there first: a missing seed would otherwise leave the template's
+# front-door README shipping into the generated repo silently — the exact cruft this strip prevents.
+[ -f README.repo.tmpl ] || die "README.repo.tmpl missing — refusing to ship the template's front-door README into the generated repo"
+mv -f README.repo.tmpl README.md
+# docs/ADOPTION.md documents how to ADOPT the template; it is meaningless once you have, so it does
+# not ship — treated like the template's own spec/plan above.
+rm -f docs/ADOPTION.md
+info "installed the generated repo's README (from README.repo.tmpl); removed the adoption playbook"
 
 git add -A
 git commit -q -m "chore: initialize ${STACK} repo from Avenue-Z/repo-template"

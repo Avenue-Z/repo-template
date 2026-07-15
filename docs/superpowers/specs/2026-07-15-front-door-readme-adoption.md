@@ -69,6 +69,11 @@ title), and that `README.repo.tmpl` and `docs/ADOPTION.md` are **gone**. This ho
 
 - `CLAUDE.md` (also a seed skeleton) — not part of this request.
 - Restructuring `docs/`.
-- The pre-existing gap that `init-repo.sh` strips the two `2026-07-13-*` template docs but not
-  `2026-07-14-next-stack-vercel-design.md`, which currently ships to generated repos. Flagged, not
-  fixed here — it is unrelated to the front door.
+## Folded in: the design-doc strip rotted
+
+While adding this feature's own spec, a pre-existing bug surfaced: `init-repo.sh` stripped the
+template's design docs by **listing their filenames**, so `2026-07-14-next-stack-vercel-design.md`
+(and this spec) shipped into generated repos untouched, and the test only asserted the `2026-07-13`
+files by name. Fixed by pattern: `init-repo.sh` now deletes every `*.md` under
+`docs/superpowers/{specs,plans}/` that is not a `README.md`, and the test asserts the same by
+pattern rather than by filename — so the next template spec cannot rot the same way.

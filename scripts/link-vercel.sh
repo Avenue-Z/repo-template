@@ -94,8 +94,10 @@ fi
 
 # We do NOT log you in. `vercel login` is an auth flow; a script that drives it is a script that
 # handles your credentials, and this one has no business doing that.
-if ! VERCEL_USER="$(vercel whoami 2>&1)"; then
-  die "you are not logged into the Vercel CLI (or it cannot reach Vercel): ${VERCEL_USER}
+# stdout ONLY. `vercel whoami` prints the username to stdout but a CLI banner to stderr; 2>&1
+# folded the banner into VERCEL_USER, so "vercel user:" printed the banner instead of the name.
+if ! VERCEL_USER="$(vercel whoami 2>/dev/null)" || [ -z "${VERCEL_USER}" ]; then
+  die "you are not logged into the Vercel CLI (or it cannot reach Vercel).
        Log in yourself, then re-run:  vercel login"
 fi
 info "vercel user: ${VERCEL_USER}"
@@ -132,11 +134,32 @@ fi
 info "running 'vercel link' — pick the scope and project when prompted"
 vercel link || die "vercel link failed or was cancelled — nothing was linked."
 
-[ -f .vercel/project.json ] || die "vercel link reported success but .vercel/project.json is missing.
+# vercel link writes ONE of two local formats, and which one is itself a signal:
+#   .vercel/project.json  -> single-project format; carries the projectId/orgId we need.
+#   .vercel/repo.json     -> multi-project format, written once the project is GIT-CONNECTED.
+#
+# We can read the first. We deliberately do NOT parse the second: its schema was never captured,
+# and this repo's rule is that guessing a shape is worse than stopping — the whole reason the
+# --json and link:null bugs existed. So an already-connected repo gets an HONEST refusal, not the
+# old misleading "vercel link reported success but project.json is missing", which was reachable
+# from this script's own "...re-run this script" advice and read like the tool had failed.
+if [ -f .vercel/project.json ]; then
+  PROJECT_ID="$(jq -r '.projectId // empty' .vercel/project.json)"
+  [ -n "${PROJECT_ID}" ] || die "could not read projectId from .vercel/project.json"
+  info "linked to Vercel project ${PROJECT_ID}"
+elif [ -f .vercel/repo.json ]; then
+  die "this repo is already connected to Vercel (the multi-project .vercel/repo.json format).
+
+       Re-running link on an already-connected repo is NOT yet supported here: repo.json's schema
+       is not handled, and guessing it is worse than stopping. Verify by hand instead —
+         Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking
+       must say '${PROD_BRANCH}'.
+
+       (Nothing is deploying: vercel.json still has deploymentEnabled: false.)"
+else
+  die "vercel link reported success but wrote neither .vercel/project.json nor .vercel/repo.json.
        Refusing to claim the repo is linked when it cannot be shown to be."
-PROJECT_ID="$(jq -r '.projectId // empty' .vercel/project.json)"
-[ -n "${PROJECT_ID}" ] || die "could not read projectId from .vercel/project.json"
-info "linked to Vercel project ${PROJECT_ID}"
+fi
 
 # --------------------------------------------------------- verify what Vercel ACTUALLY thinks
 # A project may carry an explicit productionBranch override, set by hand in the dashboard, and
@@ -160,19 +183,50 @@ info "linked to Vercel project ${PROJECT_ID}"
 VERCEL_API="https://api.vercel.com"
 ORG_ID="$(jq -r '.orgId // empty' .vercel/project.json)"
 
-check_production_branch() { # echoes the branch, or "" if there is no override; returns 1 if it cannot ask
+# Verified against a live project (Vercel API, CLI 54.7.1): a git-connected project ALWAYS carries
+# a populated `.link.productionBranch` — it is the branch itself ("main"), not an "override" that is
+# absent when inherited. So an EMPTY value does not mean "inherits the default". It means `.link` is
+# null: the project is NOT CONNECTED TO A GIT REPOSITORY AT ALL. Treating that as "verified" is the
+# same warn-and-carry-on failure the --json bug had — it green-ticks an unknown. `vercel link` will
+# happily create such a project (answer "no" to "Detected a repository. Connect it to this project?").
+# So: no git link -> we have verified NOTHING -> refuse.
+NO_GIT_LINK="__no_git_link__"
+
+check_production_branch() { # echoes the branch, or NO_GIT_LINK; returns 1 if it cannot ask
   local url resp
   url="${VERCEL_API}/v9/projects/${PROJECT_ID}"
   [ -n "${ORG_ID}" ] && url="${url}?teamId=${ORG_ID}"
   resp="$(curl --fail -sS -H "Authorization: Bearer ${VERCEL_TOKEN}" "${url}" 2>/dev/null)" || return 1
   printf '%s' "${resp}" | jq -e . >/dev/null 2>&1 || return 1     # not JSON -> we did not get an answer
+  if ! printf '%s' "${resp}" | jq -e '.link != null' >/dev/null 2>&1; then
+    printf '%s' "${NO_GIT_LINK}"
+    return 0
+  fi
   printf '%s' "${resp}" | jq -r '.link.productionBranch // empty'
 }
 
 if [ -n "${VERCEL_TOKEN:-}" ]; then
   if ACTUAL="$(check_production_branch)"; then
-    if [ -z "${ACTUAL}" ]; then
-      info "Vercel has no productionBranch override — it inherits the default branch ('${PROD_BRANCH}'). Verified."
+    if [ "${ACTUAL}" = "${NO_GIT_LINK}" ]; then
+      die "the Vercel project is not connected to any Git repository.
+
+       REFUSING TO FINISH. Vercel reports no Git link for this project, so it has NO production
+       branch to check — and nothing this script could verify. A project in this state deploys
+       from CLI uploads, not from your branches, so the entire branch-flow guarantee is absent.
+
+       This usually means 'vercel link' was answered with 'no' at:
+           'Detected a repository. Connect it to this project?'
+
+       Connect the repo (Vercel dashboard -> Project -> Settings -> Git), then re-run this script.
+
+       (Nothing is deploying: vercel.json still has deploymentEnabled: false.)"
+    elif [ -z "${ACTUAL}" ]; then
+      die "Vercel reports a Git link for this project but no production branch.
+
+       REFUSING TO FINISH. A failure to verify is not a verified pass. Every git-connected project
+       observed carries a populated productionBranch, so this response is one we do not understand
+       — and we will not green-tick what we cannot read. Check the project by hand:
+           Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking"
     elif [ "${ACTUAL}" = "${PROD_BRANCH}" ]; then
       info "Vercel productionBranch is explicitly '${ACTUAL}'. Verified."
     else
@@ -193,17 +247,38 @@ if [ -n "${VERCEL_TOKEN:-}" ]; then
   fi
 else
   # No token: we genuinely cannot check. Do NOT print a green tick over an unknown, and do NOT
-  # simply warn and exit 0 — a warning nobody actions is how an inert control ships. Make the
-  # human look, and make them say so.
+  # simply warn and exit 0 — a warning nobody actions is how an inert control ships. Make the human
+  # look, and make them say so.
+  #
+  # TWO things must be confirmed, not one — and confirming only the branch is the bug this replaces.
+  # The token path REFUSES a project with no Git connection (link:null): a project that deploys from
+  # CLI uploads, not branches, where the branch-flow guarantee is absent and there is NO Branch
+  # Tracking to read. Without a token we cannot detect that ourselves, so a human typing 'main' on
+  # reflex would sail a NOT-CONNECTED project straight through a branch-only check and get a pass —
+  # observed for real. So confirm the CONNECTION first; a project with no repo attached has nothing
+  # to verify and must not pass.
   printf '\n'
-  warn "CANNOT VERIFY Vercel's production branch from here."
-  warn "  The Vercel CLI cannot report it (no command emits JSON), and there is no VERCEL_TOKEN set."
-  warn "  The repo default branch is '${PROD_BRANCH}', so Vercel SHOULD inherit it — but an explicit"
-  warn "  override set in the dashboard WINS, and only you can see whether one exists."
+  warn "CANNOT machine-verify this project (no VERCEL_TOKEN set, and the Vercel CLI emits no JSON)."
+  warn "  Two things must be true, and only you can see them. Confirm BOTH, by hand."
   printf '\n'
-  printf '  Open:  Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking\n'
-  printf '  It must say: %s\n\n' "${PROD_BRANCH}"
-  printf 'Type the production branch you see there (anything else aborts): '
+  printf '  1. Open: Vercel dashboard -> Project -> Settings -> Git\n'
+  printf '     This repository must be shown there as the CONNECTED Git repository.\n'
+  printf 'Is it connected? [y/N] -> '
+  IFS= read -r connected || connected=""
+  case "${connected}" in
+    y|Y|yes|YES) ;;
+    *) die "no Git connection confirmed.
+
+       If Settings -> Git shows no connected repository, this project deploys from CLI uploads, not
+       from your branches — the branch-flow guarantee does not exist, and there is nothing here to
+       verify. Connect the repo (or re-run 'vercel link' and answer YES to
+       'Detected a repository. Connect it to this project?'), then re-run this script.
+
+       (Nothing is deploying: vercel.json still has deploymentEnabled: false.)" ;;
+  esac
+  printf '\n'
+  printf '  2. Open: Settings -> Environments -> Production -> Branch Tracking\n'
+  printf 'Type the production branch it shows (anything else aborts) -> '
   IFS= read -r seen || seen=""
   if [ "${seen}" != "${PROD_BRANCH}" ]; then
     die "you entered '${seen:-<nothing>}', not '${PROD_BRANCH}'.
@@ -214,7 +289,7 @@ else
 
        (Nothing is deploying: vercel.json still has deploymentEnabled: false.)"
   fi
-  info "production branch confirmed as '${PROD_BRANCH}' by you (not machine-verified)"
+  info "connection and production branch ('${PROD_BRANCH}') confirmed by you (not machine-verified)"
 fi
 
 cat <<EOF

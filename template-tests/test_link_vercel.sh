@@ -92,6 +92,36 @@ setup_repo() { # <vercel.json contents>
 deployed()  { grep -q '^vercel deploy' "${VERCEL_LOG}" 2>/dev/null; }
 linked()    { grep -q '^vercel link'   "${VERCEL_LOG}" 2>/dev/null; }
 
+# Model a `vercel link` that writes .vercel/repo.json — the multi-project format that
+# `vercel link --repo` (alpha) produces, NOT what a plain git-connected `vercel link` writes.
+# CAPTURED LIVE (2026-07-15) against a real git-connected Avenue-Z project: a normal
+# `vercel link` — even after auto-connecting the GitHub repo — writes .vercel/project.json;
+# `vercel link --repo` writes .vercel/repo.json, whose single-project shape is exactly:
+#   {"remoteName":"origin","projects":[{"id":"prj_…","name":"…","directory":".","orgId":"team_…"}]}
+# The project id lives at .projects[].id (NOT .projectId), and the team id at .projects[].orgId.
+# <repo-json> is embedded whole (same lesson as make_stubs: build valid JSON in the parent).
+link_writes_repojson() { # <repo-json-literal>
+  local repo_json="$1"
+  cat > "${STUB}/vercel" <<STUBEOF
+#!/usr/bin/env bash
+echo "vercel \$*" >> "${VERCEL_LOG}"
+case "\$*" in
+  whoami*)  echo "paul@avenuez.com" ;;
+  link*)    mkdir -p .vercel; echo '${repo_json}' > .vercel/repo.json ;;
+  deploy*)  echo "FAKE VERCEL: deploy was invoked!" >&2; exit 0 ;;
+  *)        echo "fake vercel: unexpected: \$*" >&2; exit 1 ;;
+esac
+STUBEOF
+  chmod +x "${STUB}/vercel"
+}
+
+# The single-project repo.json captured verbatim from the live CLI (ids swapped for the stub's,
+# which the curl stub echoes back regardless of URL — but the URL is logged, so the tests below can
+# prove the script pulled prj_test123 / team_test out of THIS file and put them in the API call).
+REPO_JSON_ONE='{"remoteName":"origin","projects":[{"id":"prj_test123","name":"vercel-link-test2","directory":".","orgId":"team_test"}]}'
+# A genuine monorepo: two projects. "Which one is production for this repo" is ambiguous -> refuse.
+REPO_JSON_TWO='{"remoteName":"origin","projects":[{"id":"prj_web","name":"web","directory":"apps/web","orgId":"team_test"},{"id":"prj_api","name":"api","directory":"apps/api","orgId":"team_test"}]}'
+
 # link-vercel.sh REQUIRES A TTY (linking a deploy target is a human act, not a pipeline step).
 # So a plain `./link-vercel.sh </dev/null` dies at the TTY guard and never reaches the checks
 # below — every "it refuses to X" assertion would then pass for the WRONG REASON, proving only
@@ -281,33 +311,95 @@ assert_match "reassures nothing is deploying yet" 'deploymentEnabled: false' "$o
 if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
 # ---------------------------------------------------------------------------------------
-# ITEM 2 — an already-connected repo must get an HONEST refusal, not a misleading crash. A real
-# git-connected project makes `vercel link` write .vercel/repo.json (multi-project) instead of
-# project.json. The old `[ -f .vercel/project.json ] || die "...project.json is missing"` then
-# aborted as if the CLI had failed — and that path is reachable from the script's OWN "re-run this
-# script" advice. Model it with a repo.json and no project.json.
-echo "link-vercel: an already-connected repo (repo.json, no project.json) gets an honest refusal"
+# ITEM 2 — a repo.json that is NOT a single project must get an HONEST refusal, not a misleading
+# crash. repo.json is the multi-project format written by `vercel link --repo` (alpha) — CAPTURED
+# LIVE 2026-07-15: a plain git-connected `vercel link` writes project.json, so repo.json only shows
+# up when someone used `--repo`. The old `[ -f .vercel/project.json ] || die "...project.json is
+# missing"` aborted as if the CLI had failed — a path reachable from the script's OWN "re-run this
+# script" advice. A repo.json with 0 (or >1) projects has no single project to check, so it is still
+# refused; the single-project case is handled below. Model the not-single case with an empty array.
+echo "link-vercel: a repo.json that is not a single project gets an honest refusal"
 make_stubs "main" ""
 setup_repo "$DEPLOYS_OFF"
-# Re-point the vercel stub's `link` to write repo.json, the way a connected project really does.
-cat > "${STUB}/vercel" <<'STUBEOF'
-#!/usr/bin/env bash
-echo "vercel $*" >> "${VERCEL_LOG}"
-case "$*" in
-  whoami*)  echo "paul@avenuez.com" ;;
-  link*)    mkdir -p .vercel; echo '{"projects":[]}' > .vercel/repo.json ;;   # connected -> repo.json
-  deploy*)  echo "FAKE VERCEL: deploy was invoked!" >&2; exit 0 ;;
-  *)        echo "fake vercel: unexpected: $*" >&2; exit 1 ;;
-esac
-STUBEOF
-chmod +x "${STUB}/vercel"
+link_writes_repojson '{"remoteName":"origin","projects":[]}'   # 0 projects -> nothing single to verify
 if run_linked "main" "y"; then
-  fail "an already-connected repo (repo.json) did not refuse. Output: ${out}"
+  fail "a non-single-project repo.json did not refuse. Output: ${out}"
 else
-  pass "an already-connected repo is refused, not crashed-on"
+  pass "a repo.json with no single project is refused, not crashed-on"
 fi
 assert_match   "names the multi-project format honestly" 'multi-project .vercel/repo.json' "$out"
 assert_nomatch "does NOT print the old misleading 'project.json is missing'" 'project.json is missing' "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+# ---------------------------------------------------------------------------------------
+# THE UNLOCK. A SINGLE-project repo.json carries exactly the two fields the REST-API check needs —
+# .projects[0].id and .projects[0].orgId (CAPTURED LIVE, see link_writes_repojson). So a re-run on
+# an already-connected single-app repo can be VERIFIED for real, not honestly-refused. The old code
+# refused every repo.json because its schema was uncaptured; now that it is captured, refusing a
+# shape we CAN read would itself be the "failure to verify treated as..." — no, worse: a refusal to
+# verify when we can. So: read the id from repo.json and ask the same documented REST API.
+echo "link-vercel: with VERCEL_TOKEN — a single-project repo.json is VERIFIED via the REST API (main)"
+make_stubs "main" "main"                 # curl stub -> {"link":{"productionBranch":"main"}}
+setup_repo "$DEPLOYS_OFF"
+link_writes_repojson "$REPO_JSON_ONE"
+if run_linked_token; then
+  pass "verifies a single-project repo.json instead of refusing it"
+else
+  fail "a single-project repo.json with productionBranch=main should verify and pass. Output: ${out}"
+fi
+assert_match "reports it VERIFIED (machine-checked, not asserted)" "explicitly 'main'. Verified" "$out"
+# Prove it read the RIGHT fields out of repo.json: the id and orgId must appear in the API URL it built.
+assert_match "used the project id from .projects[0].id" 'prj_test123' "$(cat "${VERCEL_LOG}")"
+assert_match "used the orgId from .projects[0].orgId as teamId" 'teamId=team_test' "$(cat "${VERCEL_LOG}")"
+assert_nomatch "does NOT fall back to the honest repo.json refusal" 'multi-project .vercel/repo.json' "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+echo "link-vercel: with VERCEL_TOKEN — a single-project repo.json with a 'dev' override is REFUSED"
+make_stubs "main" "dev"                  # curl stub -> {"link":{"productionBranch":"dev"}}
+setup_repo "$DEPLOYS_OFF"
+link_writes_repojson "$REPO_JSON_ONE"
+if run_linked_token; then
+  fail "accepted a 'dev' production-branch override read from a single-project repo.json. Output: ${out}"
+else
+  pass "refuses a 'dev' override even when the id came from repo.json"
+fi
+assert_match "names the wrong branch" "production branch is 'dev'" "$out"
+assert_match "actually asked the REST API" 'api\.vercel\.com/v9/projects' "$(cat "${VERCEL_LOG}")"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+# ---------------------------------------------------------------------------------------
+# The line we DO NOT cross: a genuine monorepo repo.json with >1 project. There is no single
+# production branch to check, and picking one would be exactly the guess this whole script refuses
+# to make. So a multi-project repo.json is still refused — honestly, naming the count.
+echo "link-vercel: with VERCEL_TOKEN — a MULTI-project repo.json is still honestly refused (no guessing)"
+make_stubs "main" "main"
+setup_repo "$DEPLOYS_OFF"
+link_writes_repojson "$REPO_JSON_TWO"
+if run_linked_token; then
+  fail "a multi-project repo.json was not refused — the script guessed which project is production. Output: ${out}"
+else
+  pass "a multi-project repo.json is refused rather than guessed"
+fi
+assert_match  "names how many projects it saw" '2 Vercel projects' "$out"
+assert_nomatch "never green-ticks a multi-project repo.json" "explicitly 'main'. Verified" "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+# ---------------------------------------------------------------------------------------
+# Without a token, a single-project repo.json must reach the SAME manual two-question path as
+# project.json — not the honest refusal. The old code refused it before ever asking, so a
+# legitimately-connected repo could not be confirmed at all without a token.
+echo "link-vercel: without VERCEL_TOKEN — a single-project repo.json reaches the manual confirm path"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_OFF"
+link_writes_repojson "$REPO_JSON_ONE"
+if run_linked "main" "y"; then           # connection: yes, branch: main
+  pass "a single-project repo.json can be confirmed by hand and completes the link"
+else
+  fail "connection=yes + branch=main over a single-project repo.json should succeed. Output: ${out}"
+fi
+assert_match  "admits it could not machine-verify" 'CANNOT machine-verify' "$out"
+assert_match  "confirms by the human, not the machine" 'confirmed by you' "$out"
+assert_nomatch "does NOT honestly-refuse a single-project repo.json" 'multi-project .vercel/repo.json' "$out"
 if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
 # ---------------------------------------------------------------------------------------
@@ -399,5 +491,24 @@ assert_match "refuses the connected-but-null-branch shape" 'Git link for this pr
 assert_match "reads the branch only after ruling those out" 'link\.productionBranch' "$shape_src"
 # The fictional shape must not be what the script keys 'inherits the default' off — that was the bug.
 assert_nomatch "never treats an empty productionBranch as a verified pass" 'inherits the default branch.*Verified' "$shape_src"
+
+# ---------------------------------------------------------------------------------------
+# SHAPE CONTRACT (local files) — the two shapes `vercel link` writes, CAPTURED LIVE 2026-07-15
+# against a real git-connected Avenue-Z project, NOT assumed:
+#
+#   .vercel/project.json  (plain `vercel link`, even after it auto-connects the GitHub repo):
+#       {"projectId":"prj_…","orgId":"team_…","projectName":"…"}
+#   .vercel/repo.json     (`vercel link --repo`, alpha multi-project mode):
+#       {"remoteName":"origin","projects":[{"id":"prj_…","name":"…","directory":".","orgId":"team_…"}]}
+#
+# The earlier belief that git-connection itself writes repo.json was WRONG (it writes project.json);
+# repo.json's project id is .projects[].id — NOT .projectId — and the team id is .projects[].orgId.
+# Pin those field paths so a refactor cannot silently read the wrong key and re-earn a link:null-class
+# bug, and pin that a not-single-project repo.json is refused rather than guessed.
+echo "link-vercel: SHAPE CONTRACT — the script reads the captured repo.json fields, and only when single"
+assert_match "reads the project id from repo.json at .projects[0].id (not .projectId)" 'projects\[0\]\.id' "$shape_src"
+assert_match "reads the team id from repo.json at .projects[0].orgId"                   'projects\[0\]\.orgId' "$shape_src"
+assert_match "only trusts a repo.json with exactly one project (guards the count)"      '\.projects | length' "$shape_src"
+assert_match "still honestly refuses a non-single repo.json"          'multi-project .vercel/repo.json' "$shape_src"
 
 finish

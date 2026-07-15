@@ -40,18 +40,40 @@ assert_no_file "template-tests.yml workflow removed (it runs a suite that no lon
 # The workflows a generated repo SHOULD keep must survive the cull.
 assert_file    "guard-base-branch.yml survived" .github/workflows/guard-base-branch.yml
 assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
-assert_no_file "template's spec removed" docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md
-assert_no_file "template's plan removed" docs/superpowers/plans/2026-07-13-avenue-z-repo-template.md
+# By pattern, not by filename: a spec added tomorrow must not slip through the way 2026-07-14 once
+# did when this asserted only the 2026-07-13 files by name. Nothing but a README may remain.
+leftover_docs="$(find docs/superpowers/specs docs/superpowers/plans -maxdepth 1 -type f -name '*.md' ! -name 'README.md')"
+if [ -z "${leftover_docs}" ]; then
+  pass "no template design docs survived in specs/ or plans/"
+else
+  fail "template design docs survived: ${leftover_docs}"
+fi
+
+# The front door is template-only. The seed (README.repo.tmpl) must have been swapped IN as
+# README.md, and neither the seed file nor the adoption playbook may survive into the generated repo.
+# A generated README carrying the template's front-door title inherited the exact cruft the swap exists
+# to prevent — so assert it IS the skeleton, not just that the tmpl is gone.
+assert_no_file "seed README.repo.tmpl removed" README.repo.tmpl
+assert_no_file "adoption playbook docs/ADOPTION.md removed" docs/ADOPTION.md
+assert_file    "README.md present (the seed, swapped in)" README.md
+assert_match   "generated README is the seed skeleton" 'TODO: repo-name' "$(cat README.md)"
+assert_nomatch "generated README is NOT the template front door" 'Avenue-Z Repo Template' "$(cat README.md)"
+
 for b in dev staging main; do
   if git ls-tree -r --name-only "$b" | grep -qE '^\.github/workflows/template-tests\.yml$'; then
     fail "branch $b still carries .github/workflows/template-tests.yml"
   else
     pass "branch $b is free of the template-tests workflow"
   fi
-  if git ls-tree -r --name-only "$b" | grep -qE '^template-tests/|^docs/superpowers/(specs|plans)/2026-07-13-'; then
+  if git ls-tree -r --name-only "$b" | grep -qE '^template-tests/|^docs/superpowers/(specs|plans)/20[0-9][0-9]-'; then
     fail "branch $b still carries the template's self-tests or its own spec/plan"
   else
     pass "branch $b is free of the template's self-tests and its own spec/plan"
+  fi
+  if git ls-tree -r --name-only "$b" | grep -qE '^README\.repo\.tmpl$|^docs/ADOPTION\.md$'; then
+    fail "branch $b still carries the template's front-door files (README.repo.tmpl / docs/ADOPTION.md)"
+  else
+    pass "branch $b is free of the template's front-door files"
   fi
 done
 

@@ -36,7 +36,19 @@ make_stubs() { # <default-branch> <production-branch-or-empty>
   # heredoc produced `""dev""` -> `productionBranch:dev`, which is INVALID JSON: jq then returned
   # empty, the script read that as "no override" and exited 0, and the refusal test passed while
   # proving nothing. An invalid fixture is a silently vacuous test.
-  if [ -n "${prod_branch}" ]; then
+  # NOGIT models what the REAL API returns for a project with no Git connection: `"link": null`.
+  # Verified against a live project — a git-connected project ALWAYS has a populated
+  # productionBranch, so `link:null` (NOT a null productionBranch) is the only way the script can
+  # see an empty value. The old fixture only ever produced `{"link":{"productionBranch":null}}`,
+  # a shape the real API does not emit for a linked project, so the no-git case went untested and
+  # the script green-ticked it as "no override — inherits the default branch. Verified."
+  if [ "${prod_branch}" = "NOGIT" ]; then
+    inspect_json='{"link":null}'
+  elif [ "${prod_branch}" = "NOBRANCH" ]; then
+    # Git-connected, but productionBranch is null — a shape we do not understand and must refuse
+    # rather than green-tick. `.link != null`, so this is distinct from NOGIT.
+    inspect_json='{"link":{"repo":"vercel-link-test","productionBranch":null}}'
+  elif [ -n "${prod_branch}" ]; then
     inspect_json="{\"link\":{\"productionBranch\":\"${prod_branch}\"}}"
   else
     inspect_json='{"link":{"productionBranch":null}}'
@@ -85,9 +97,11 @@ linked()    { grep -q '^vercel link'   "${VERCEL_LOG}" 2>/dev/null; }
 # below — every "it refuses to X" assertion would then pass for the WRONG REASON, proving only
 # that the TTY guard works. Run it over a real pty so the refusals are proven by the actual
 # default-branch / deploys-off / production-branch checks.
-run_linked() { # -> sets $out, returns the script's exit code. No VERCEL_TOKEN: manual-confirm path.
-  local typed="${1:-main}"     # what the human types when asked for the production branch
-  out="$(pty_run "${typed}" "cd '${WORK}/repo' && PATH='${STUB}:'\"\$PATH\" VERCEL_LOG='${VERCEL_LOG}' ./scripts/link-vercel.sh")"
+run_linked() { # <branch-typed=main> <connection-answer=y> : no VERCEL_TOKEN, the manual-confirm path
+  # The no-token path now asks TWO questions — first "is the Git repo connected?", then the branch.
+  # Feed both as newline-separated stdin; the pty buffers them and the two `read`s consume in order.
+  local typed="${1:-main}" conn="${2:-y}"
+  out="$(pty_run "$(printf '%s\n%s' "${conn}" "${typed}")" "cd '${WORK}/repo' && PATH='${STUB}:'\"\$PATH\" VERCEL_LOG='${VERCEL_LOG}' ./scripts/link-vercel.sh")"
 }
 
 run_linked_token() { # -> sets $out. VERCEL_TOKEN set: the REST-API path, no human prompt.
@@ -176,6 +190,25 @@ assert_match "says there is no API to fix it, so do it by hand" 'NO supported AP
 assert_match "actually asked the REST API" 'api\.vercel\.com/v9/projects' "$(cat "${VERCEL_LOG}")"
 if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
+# ---------------------------------------------------------------------------------------
+# A project with NO GIT CONNECTION has `"link": null`, so `.link.productionBranch // empty` is
+# EMPTY — the same empty the script used to read as "no override, inherits the default branch:
+# Verified." It is not. It is a project with no repo attached, deploying from CLI uploads rather
+# than from branches, where the branch-flow guarantee does not exist at all. `vercel link` creates
+# exactly this if you answer "no" to "Detected a repository. Connect it to this project?" —
+# observed against a real project, where the script printed "Verified." and exited 0.
+echo "link-vercel: with VERCEL_TOKEN — REFUSES a project with no Git connection (link:null)"
+make_stubs "main" "NOGIT"
+setup_repo "$DEPLOYS_OFF"
+if run_linked_token; then
+  fail "green-ticked a project with NO Git connection — 'I could not check' is not 'it is fine'. Output: ${out}"
+else
+  pass "refuses a Vercel project that is not connected to a Git repository"
+fi
+assert_match "says the project has no git repo" 'not connected to any Git repository' "$out"
+assert_nomatch "never claims it verified anything" 'Verified' "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
 echo "link-vercel: with VERCEL_TOKEN — an override of exactly 'main' is accepted"
 make_stubs "main" "main"
 setup_repo "$DEPLOYS_OFF"
@@ -187,30 +220,94 @@ fi
 assert_match "reports it VERIFIED (machine-checked, not asserted)" "explicitly 'main'. Verified" "$out"
 
 # ---------------------------------------------------------------------------------------
-# NO TOKEN: we genuinely cannot check. The old code WARNED and exited 0 — an inert control. Now a
-# human must look at the dashboard and type what they see. "I could not check" is not "it is fine".
-echo "link-vercel: without VERCEL_TOKEN — a human must confirm the production branch"
-make_stubs "main" ""
+# A GIT-LINKED PROJECT WHOSE productionBranch IS null. `.link != null` (so it is not the NOGIT
+# case), but `.link.productionBranch` is null — a shape no observed connected project produces.
+# The script must REFUSE it rather than fall through to a green tick: "a failure to verify is not
+# a verified pass". #29 added the die; this is the test #29 did not, so the branch can't silently rot.
+echo "link-vercel: with VERCEL_TOKEN — REFUSES a Git-linked project whose productionBranch is null"
+make_stubs "main" "NOBRANCH"
 setup_repo "$DEPLOYS_OFF"
-if run_linked "main"; then
-  pass "typing 'main' (what the dashboard shows) completes the link"
+if run_linked_token; then
+  fail "green-ticked a linked project with a null productionBranch — a shape it should not understand. Output: ${out}"
 else
-  fail "typing 'main' should succeed. Output: ${out}"
+  pass "refuses a linked project with no readable production branch"
 fi
-assert_match "admits it could not machine-verify" 'CANNOT VERIFY' "$out"
-assert_match "says the confirmation is human, not machine" 'not machine-verified' "$out"
-assert_nomatch "never claims it verified anything itself" 'productionBranch is explicitly' "$out"
+assert_match "says there is a git link but no branch" 'Git link for this project but no production branch' "$out"
+# NB: match the SUCCESS claim specifically, not the bare word "verified" — the refusal message
+# legitimately contains "a failure to verify is not a verified pass".
+assert_nomatch "never green-ticks it (no 'explicitly ... Verified')" "productionBranch is explicitly" "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
-echo "link-vercel: without VERCEL_TOKEN — typing anything but 'main' ABORTS (it does not just warn)"
+# ---------------------------------------------------------------------------------------
+# NO TOKEN: we genuinely cannot check. The old code WARNED and exited 0 — an inert control. Now a
+# human must confirm BOTH the Git connection AND the branch. "I could not check" is not "it's fine".
+echo "link-vercel: without VERCEL_TOKEN — a human confirms the connection AND the branch"
 make_stubs "main" ""
 setup_repo "$DEPLOYS_OFF"
-if run_linked "dev"; then
-  fail "the human said the dashboard shows 'dev' and the script exited 0 anyway — that is the inert warn-and-carry-on this fix removes. Output: ${out}"
+if run_linked "main" "y"; then   # connection: yes, branch: main
+  pass "confirming the connection and typing 'main' completes the link"
+else
+  fail "connection=yes + branch=main should succeed. Output: ${out}"
+fi
+assert_match "admits it could not machine-verify" 'CANNOT machine-verify' "$out"
+assert_match "makes the human confirm the connection" 'CONNECTED Git repository' "$out"
+assert_match "says the confirmation is human, not machine" 'not machine-verified' "$out"
+
+# THE ITEM-1 FIX. Without a token the script cannot see link:null, so a human who has NOT confirmed
+# a connection must not be able to sail through on the branch alone. Answering 'n' to the
+# connection question must abort BEFORE the branch is ever asked.
+echo "link-vercel: without VERCEL_TOKEN — an unconfirmed Git connection ABORTS (before the branch)"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_OFF"
+if run_linked "main" "n"; then   # connection: NO — must abort even though branch would be 'main'
+  fail "no connection confirmed, yet the script passed on a reflexive 'main' — the exact item-1 gap. Output: ${out}"
+else
+  pass "an unconfirmed Git connection is fatal, even when the typed branch is 'main'"
+fi
+assert_match "says no git connection was confirmed" 'no Git connection confirmed' "$out"
+assert_nomatch "does not go on to claim confirmation" 'confirmed by you' "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+echo "link-vercel: without VERCEL_TOKEN — connection confirmed but branch is 'dev' ABORTS"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_OFF"
+if run_linked "dev" "y"; then    # connection: yes, branch: dev
+  fail "the human said Branch Tracking shows 'dev' and the script exited 0 anyway. Output: ${out}"
 else
   pass "a production branch of 'dev' reported by the human is fatal"
 fi
 assert_match "warns not to enable deploys" 'Do NOT enable any deploys' "$out"
 assert_match "reassures nothing is deploying yet" 'deploymentEnabled: false' "$out"
+if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
+
+# ---------------------------------------------------------------------------------------
+# ITEM 2 — an already-connected repo must get an HONEST refusal, not a misleading crash. A real
+# git-connected project makes `vercel link` write .vercel/repo.json (multi-project) instead of
+# project.json. The old `[ -f .vercel/project.json ] || die "...project.json is missing"` then
+# aborted as if the CLI had failed — and that path is reachable from the script's OWN "re-run this
+# script" advice. Model it with a repo.json and no project.json.
+echo "link-vercel: an already-connected repo (repo.json, no project.json) gets an honest refusal"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_OFF"
+# Re-point the vercel stub's `link` to write repo.json, the way a connected project really does.
+cat > "${STUB}/vercel" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "vercel $*" >> "${VERCEL_LOG}"
+case "$*" in
+  whoami*)  echo "paul@avenuez.com" ;;
+  link*)    mkdir -p .vercel; echo '{"projects":[]}' > .vercel/repo.json ;;   # connected -> repo.json
+  deploy*)  echo "FAKE VERCEL: deploy was invoked!" >&2; exit 0 ;;
+  *)        echo "fake vercel: unexpected: $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB}/vercel"
+if run_linked "main" "y"; then
+  fail "an already-connected repo (repo.json) did not refuse. Output: ${out}"
+else
+  pass "an already-connected repo is refused, not crashed-on"
+fi
+assert_match   "names the multi-project format honestly" 'multi-project .vercel/repo.json' "$out"
+assert_nomatch "does NOT print the old misleading 'project.json is missing'" 'project.json is missing' "$out"
 if deployed; then fail "IT DEPLOYED"; else pass "nothing was deployed"; fi
 
 # ---------------------------------------------------------------------------------------
@@ -278,5 +375,29 @@ else
     pass "confirmed: 'vercel project inspect' still has no --json (the REST-API path is still required)"
   fi
 fi
+
+# ---------------------------------------------------------------------------------------
+# SHAPE CONTRACT — assert the script handles the REAL response shapes, not the ones we assumed.
+#
+# The CLI-flag contract above is only half the lesson. The `--json` bug was an invented FLAG; the
+# link:null bug was an invented response SHAPE — the stub emitted {"link":{"productionBranch":null}}
+# for a not-connected project, but the real API (verified against a live project, 2026-07-15)
+# returns {"link":null}. Both were fiction the stub made true. So pin the three shapes the live API
+# actually produces, and assert the script has a distinct, non-green-tick branch for each:
+#
+#   {"link":null}                              -> no Git connection at all      -> REFUSE
+#   {"link":{"productionBranch":null}}         -> connected, branch unreadable  -> REFUSE
+#   {"link":{"productionBranch":"main"|"dev"}} -> connected, real branch        -> compare to main
+#
+# These are static presence checks, so they run even without the CLI: they stop a future refactor
+# from collapsing the three shapes back into one and silently reviving the green-tick.
+echo "link-vercel: SHAPE CONTRACT — the script handles all three real API response shapes"
+shape_src="$(cat "$SCRIPT")"
+assert_match "distinguishes link:null (no connection) — checks '.link != null'" '\.link != null' "$shape_src"
+assert_match "refuses the no-connection shape"      'not connected to any Git repository' "$shape_src"
+assert_match "refuses the connected-but-null-branch shape" 'Git link for this project but no production branch' "$shape_src"
+assert_match "reads the branch only after ruling those out" 'link\.productionBranch' "$shape_src"
+# The fictional shape must not be what the script keys 'inherits the default' off — that was the bug.
+assert_nomatch "never treats an empty productionBranch as a verified pass" 'inherits the default branch.*Verified' "$shape_src"
 
 finish

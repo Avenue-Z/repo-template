@@ -64,8 +64,8 @@ pins() { grep -rhoE 'uses: *[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@[0-9a-f]{40}' "$@" \
            | sed -E 's/uses: *//' | sort -u; }
 
 echo "action pins: the core and the templates must agree on the SHA of every SHARED action"
-core_pins="$(pins "${CORE_WF[@]}")"
-tmpl_pins="$(pins "${TMPL_WF[@]}")"
+core_pins="$(pins "${CORE_WF[@]}" || true)"
+tmpl_pins="$(pins "${TMPL_WF[@]}" || true)"
 
 if [ -z "$core_pins" ]; then fail "no SHA-pinned actions in the core workflows — this test is not testing anything"; fi
 if [ -z "$tmpl_pins" ]; then fail "no SHA-pinned actions in the template workflows — this test is not testing anything"; fi

@@ -33,6 +33,9 @@ done
 # nor the template's own 500-line spec/plan. Assert on the working tree AND on every branch,
 # because a head that still carries them is the same dead weight one commit away.
 assert_no_dir  "template-tests/ removed from working tree" template-tests
+# The template's OWN design docs live in template-docs/ (not docs/superpowers/{specs,plans}/, so a
+# spec the adopter already wrote is never deleted). init-repo removes the whole dir wholesale.
+assert_no_dir  "template-docs/ removed from working tree" template-docs
 # The WORKFLOW that runs that suite must go too. If it stayed, a generated repo would ship a job
 # that runs a directory init-repo just deleted — and the moment anyone added `template-tests` to
 # that repo's required checks, it would never report and hang every PR PENDING FOREVER.
@@ -40,13 +43,15 @@ assert_no_file "template-tests.yml workflow removed (it runs a suite that no lon
 # The workflows a generated repo SHOULD keep must survive the cull.
 assert_file    "guard-base-branch.yml survived" .github/workflows/guard-base-branch.yml
 assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
-# By pattern, not by filename: a spec added tomorrow must not slip through the way 2026-07-14 once
-# did when this asserted only the 2026-07-13 files by name. Nothing but a README may remain.
+# The generated repo's specs/ and plans/ must carry nothing but their README. This ALSO guards the
+# template's own convention: a template design doc misplaced into docs/superpowers/specs/ (where the
+# superpowers skills write by default) instead of template-docs/ would survive init and ship into
+# every generated repo. Catching a stray dated doc here turns that silent rot into a red test.
 leftover_docs="$(find docs/superpowers/specs docs/superpowers/plans -maxdepth 1 -type f -name '*.md' ! -name 'README.md')"
 if [ -z "${leftover_docs}" ]; then
-  pass "no template design docs survived in specs/ or plans/"
+  pass "no design docs survived in specs/ or plans/ (template docs belong in template-docs/)"
 else
-  fail "template design docs survived: ${leftover_docs}"
+  fail "design docs survived in specs/ or plans/ — a template doc misplaced outside template-docs/? ${leftover_docs}"
 fi
 
 # The front door is template-only. The seed (README.repo.tmpl) must have been swapped IN as
@@ -65,7 +70,7 @@ for b in dev staging main; do
   else
     pass "branch $b is free of the template-tests workflow"
   fi
-  if git ls-tree -r --name-only "$b" | grep -qE '^template-tests/|^docs/superpowers/(specs|plans)/20[0-9][0-9]-'; then
+  if git ls-tree -r --name-only "$b" | grep -qE '^template-tests/|^template-docs/|^docs/superpowers/(specs|plans)/20[0-9][0-9]-'; then
     fail "branch $b still carries the template's self-tests or its own spec/plan"
   else
     pass "branch $b is free of the template's self-tests and its own spec/plan"

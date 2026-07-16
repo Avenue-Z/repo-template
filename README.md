@@ -24,8 +24,9 @@ Every control states plainly **what it does not do**, and **a failure to verify 
 a verified pass.** The branch guard cannot stop a direct push, and says so. Secret scanning protects
 *merge*, not *push* — a leaked key that reached the remote is burned, so rotate it. A CODEOWNERS
 entry for a team without write access is silently ignored, so the script grants write or ships no
-file at all. No enforcement theater; each layer is honest about its own boundary. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
+file at all — and CODEOWNERS **routes** reviewers, it does not **require** their approval (the
+ruleset ships `required_approving_review_count: 0`). No enforcement theater; each layer is honest
+about its own boundary. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
 
 ## Quick start (net-new repo)
 
@@ -56,6 +57,6 @@ file at all. No enforcement theater; each layer is honest about its own boundary
 
 ## How it was designed
 
-- [`docs/superpowers/specs/`](docs/superpowers/specs/) — the design specs, with their review logs.
+- [`template-docs/specs/`](template-docs/specs/) — the design specs, with their review logs.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — the branch flow. **Never push directly to `main`.**
 - [`SECURITY.md`](SECURITY.md) — credential handling and the merge-not-push boundary.

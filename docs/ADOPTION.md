@@ -39,7 +39,20 @@ The whole point of the template: one click plus one script.
 4. **`next` stack only — link Vercel.** `vercel login`, then `./scripts/link-vercel.sh`. It links but
    **never deploys**: `vercel.json` ships `deploymentEnabled: false`, and it refuses to link unless
    the default branch is `main`. Enabling a branch means editing `vercel.json` in a reviewed PR.
-5. **Fill in the skeleton.** Complete the `<!-- TODO -->` markers in `README.md` and `CLAUDE.md`, and
+5. **Turn on dependency auto-remediation.** So a known-vulnerable dependency arrives as an open fix
+   PR, not a bare red `sca` check, enable Dependabot alerts and security updates:
+
+       REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+       gh api -X PUT "repos/${REPO}/vulnerability-alerts"
+       gh api -X PUT "repos/${REPO}/automated-security-fixes"
+
+   This is a repository **setting**, not a committed file — it cannot live in `dependabot.yml`, so it
+   is a deliberate one-time step here (same class as `apply-rulesets.sh`). The `sca` check enforces
+   the tier in `.github/sca-policy.json` (default `client-facing`: blocks CI on High/Critical vulns
+   **that have a fix**); these settings make that fix show up automatically. Downgrading the tier to
+   `internal` is a reviewed edit to that CODEOWNERS-guarded file — see `SECURITY.md`.
+
+6. **Fill in the skeleton.** Complete the `<!-- TODO -->` markers in `README.md` and `CLAUDE.md`, and
    install the local hook: `pre-commit install`.
 
 **Claude Code skills (once per machine, not per repo):**

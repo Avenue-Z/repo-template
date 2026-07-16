@@ -77,4 +77,9 @@ assert_match "sca.yml references .github/sca-policy.json"  '\.github/sca-policy\
 assert_match "sca.yml declares a job keyed 'sca' (the required context must reach a real job)" '^[[:space:]]*sca:' "$wf"
 assert_match "sca.yml is read-only (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
 
+# --- the stated boundary and the auto-remediation step are documented (not just in the plan) ---
+echo "docs: the SCA tier boundary and the auto-remediation step are recorded"
+assert_match "SECURITY.md states the tier-currency boundary" 'tier is only as current' "$(cat SECURITY.md)"
+assert_match "ADOPTION.md documents enabling Dependabot security updates" 'automated-security-fixes' "$(cat docs/ADOPTION.md)"
+
 finish

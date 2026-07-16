@@ -38,18 +38,29 @@ if [ -n "${all_ids}" ]; then
   while IFS= read -r _id; do printf '  - %s\n' "${_id}"; done <<<"${all_ids}"
 fi
 
-# A "blocking" finding = severity High/Critical AND a fix is available.
-#   Severity: database_specific.severity (populated for GitHub-Advisory-sourced records — the
-#     dominant case for npm/PyPI/etc). A record carrying ONLY a CVSS vector and no
-#     database_specific.severity is treated as severity-unknown -> NOT blocking. That is the honest
-#     conservative reading: block only on findings we can positively classify as High+, never on
-#     noise. (Boundary is stated in SECURITY.md; Task 2 verifies this field is present in real output.)
-#   Fix available: any affected range carrying a `fixed` event.
+# A "blocking" finding = severity High/Critical AND a fix is available FOR THE INSTALLED PACKAGE.
+#   Severity: osv-scanner's own computed CVSS base score, groups[].max_severity (a number like
+#     "8.1"), populated regardless of advisory source — more robust and language-agnostic than the
+#     source-specific database_specific.severity. High/Critical = CVSS >= 7.0. A group with no
+#     usable score (absent/empty) scores 0 and never blocks.
+#   Fix available FOR YOUR DEP: a single OSV record's affected[] can list many packages across
+#     ecosystems (e.g. an npm advisory that also lists a RubyGems port). We require a `fixed` event
+#     on the affected[] entry whose package name AND ecosystem match the ENCLOSING installed
+#     package — never "any affected entry anywhere". This is what keeps the invariant honest: a fix
+#     for some OTHER package must not block YOUR dependency.
 blocking="$(jq -r '
-  [ .results[]?.packages[]?.vulnerabilities[]?
-    | select( (.database_specific.severity // "" | ascii_upcase) as $s | $s == "HIGH" or $s == "CRITICAL" )
-    | select( any(.affected[]?.ranges[]?.events[]?; has("fixed")) )
-    | .id ]
+  [ .results[]?.packages[]? as $p
+    | ($p.package.name) as $pn | ($p.package.ecosystem) as $pe
+    | $p.groups[]?
+    | select( ((.max_severity // "") | tonumber? // 0) >= 7.0 )
+    | . as $g
+    | select( any( $p.vulnerabilities[]?;
+                   (.id) as $vid
+                   | ( ($g.ids // []) | index($vid) ) != null
+                   and any(.affected[]?;
+                           .package.name == $pn and .package.ecosystem == $pe
+                           and any(.ranges[]?.events[]?; has("fixed"))) ) )
+    | $g.ids[0] ]
   | unique | .[]' "${OSV_JSON}")"
 
 if [ -z "${blocking}" ]; then

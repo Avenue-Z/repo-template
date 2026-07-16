@@ -17,35 +17,46 @@ printf '{"tier":"client-facing"}\n' > "$TMP/client.json"
 printf '{"tier":"internal"}\n'      > "$TMP/internal.json"
 printf '{"nope":true}\n'            > "$TMP/malformed.json"   # no tier -> must default to strict
 
-# --- osv report fixtures (minimal, matching results[].packages[].vulnerabilities[]) ----
+# --- osv report fixtures (minimal, matching osv-scanner's results[].packages[] with groups[].max_severity) ---
 cat > "$TMP/high_fixed.json" <<'JSON'
 { "results": [ { "packages": [ {
   "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
-  "vulnerabilities": [ {
-    "id": "GHSA-high-fixed",
-    "database_specific": { "severity": "HIGH" },
-    "affected": [ { "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"}, {"fixed":"1.0.1"} ] } ] } ]
-  } ] } ] } ] }
+  "vulnerabilities": [ { "id": "GHSA-high-fixed",
+    "affected": [ { "package": {"name":"acme","ecosystem":"npm"},
+      "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"}, {"fixed":"1.0.1"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-high-fixed"], "max_severity": "8.1" } ] } ] } ] }
 JSON
 
 cat > "$TMP/critical_nofix.json" <<'JSON'
 { "results": [ { "packages": [ {
   "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
-  "vulnerabilities": [ {
-    "id": "GHSA-crit-nofix",
-    "database_specific": { "severity": "CRITICAL" },
-    "affected": [ { "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"} ] } ] } ]
-  } ] } ] } ] }
+  "vulnerabilities": [ { "id": "GHSA-crit-nofix",
+    "affected": [ { "package": {"name":"acme","ecosystem":"npm"},
+      "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-crit-nofix"], "max_severity": "9.8" } ] } ] } ] }
 JSON
 
 cat > "$TMP/moderate_fixed.json" <<'JSON'
 { "results": [ { "packages": [ {
   "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
-  "vulnerabilities": [ {
-    "id": "GHSA-mod-fixed",
-    "database_specific": { "severity": "MODERATE" },
-    "affected": [ { "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"}, {"fixed":"1.0.1"} ] } ] } ]
-  } ] } ] } ] }
+  "vulnerabilities": [ { "id": "GHSA-mod-fixed",
+    "affected": [ { "package": {"name":"acme","ecosystem":"npm"},
+      "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"}, {"fixed":"1.0.1"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-mod-fixed"], "max_severity": "5.3" } ] } ] } ] }
+JSON
+
+# finding #1 regression: HIGH severity, but the ONLY fix is for a DIFFERENT package/ecosystem in the
+# same advisory. The invariant says this must NOT block — there is no fix for the package we install.
+cat > "$TMP/multi_affected_otherfix.json" <<'JSON'
+{ "results": [ { "packages": [ {
+  "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
+  "vulnerabilities": [ { "id": "GHSA-multi",
+    "affected": [
+      { "package": {"name":"acme","ecosystem":"npm"},
+        "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"} ] } ] },
+      { "package": {"name":"acme-rails","ecosystem":"RubyGems"},
+        "ranges": [ { "type": "ECOSYSTEM", "events": [ {"introduced":"0"}, {"fixed":"2.0.0"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-multi"], "max_severity": "9.1" } ] } ] } ] }
 JSON
 
 printf '{"results":[]}\n' > "$TMP/empty.json"
@@ -58,6 +69,7 @@ assert_eq 1 "$(gate_rc "$TMP/high_fixed.json"     "$TMP/client.json")"    "clien
 assert_eq 0 "$(gate_rc "$TMP/high_fixed.json"     "$TMP/internal.json")"  "internal only warns on the same HIGH+fix finding"
 assert_eq 0 "$(gate_rc "$TMP/critical_nofix.json" "$TMP/client.json")"    "client-facing does NOT block a CRITICAL finding with NO fix (the invariant)"
 assert_eq 0 "$(gate_rc "$TMP/moderate_fixed.json" "$TMP/client.json")"    "client-facing does NOT block a MODERATE finding (below the High floor)"
+assert_eq 0 "$(gate_rc "$TMP/multi_affected_otherfix.json" "$TMP/client.json")" "client-facing does NOT block a HIGH finding whose only fix is for a DIFFERENT package (#1: fix scoped to the installed package)"
 assert_eq 0 "$(gate_rc "$TMP/empty.json"          "$TMP/client.json")"    "an empty report passes"
 assert_eq 1 "$(gate_rc "$TMP/high_fixed.json"     "$TMP/malformed.json")" "a policy with no valid tier defaults to client-facing (strict) and still blocks"
 assert_eq 0 "$(gate_rc "$TMP/does-not-exist.json" "$TMP/client.json")"    "a missing/empty osv report passes (osv-scanner found no packages)"

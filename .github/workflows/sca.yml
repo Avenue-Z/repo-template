@@ -43,8 +43,16 @@ jobs:
       - name: scan the dependency tree and apply the policy
         run: |
           set -euo pipefail
-          # osv-scanner exits 1 when it finds ANY vulnerability and 128 when it finds no packages.
-          # Neither is this gate's verdict — the tier threshold is applied by sca-gate.sh — so
-          # capture the report and never let the raw scan exit fail the job here.
-          osv-scanner scan -r --format json --output-file osv.json ./ || true
+          # osv-scanner's expected exits: 0 = no vulns, 1 = vulns found, 128 = no packages to scan.
+          # 1 and 128 are NOT this gate's verdict — the tier threshold is applied by sca-gate.sh — so
+          # we allow those through. But `|| true` would also swallow a scanner ERROR (network/panic):
+          # that yields NO report, which sca-gate.sh reads as "nothing to scan" -> a green check with
+          # nothing actually scanned. That is fail-OPEN, the opposite of secret-scan's posture. So
+          # allow only the known-good codes and fail the job on anything else.
+          rc=0
+          osv-scanner scan -r --format json --output-file osv.json ./ || rc=$?
+          case "${rc}" in
+            0|1|128) ;;
+            *) echo "::error::osv-scanner exited ${rc} (not a findings/no-package code) — failed scan, refusing to report a clean check"; exit "${rc}" ;;
+          esac
           scripts/sca-gate.sh osv.json .github/sca-policy.json

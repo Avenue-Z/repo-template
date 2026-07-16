@@ -67,4 +67,14 @@ echo "sca policy: the shipped default tier is the fail-safe 'client-facing'"
 assert_file "the SCA policy file exists" .github/sca-policy.json
 assert_eq "client-facing" "$(jq -r '.tier' .github/sca-policy.json)" "shipped .github/sca-policy.json tier == client-facing"
 
+# --- design §Testing (b): the policy is present AND referenced by the SCA workflow ------
+echo "sca workflow: it reads the policy and runs the gate under a job named 'sca'"
+WF=.github/workflows/sca.yml
+assert_file "the SCA workflow exists" "$WF"
+wf="$(cat "$WF")"
+assert_match "sca.yml runs scripts/sca-gate.sh"           'scripts/sca-gate\.sh'      "$wf"
+assert_match "sca.yml references .github/sca-policy.json"  '\.github/sca-policy\.json' "$wf"
+assert_match "sca.yml declares a job keyed 'sca' (the required context must reach a real job)" '^[[:space:]]*sca:' "$wf"
+assert_match "sca.yml is read-only (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
+
 finish

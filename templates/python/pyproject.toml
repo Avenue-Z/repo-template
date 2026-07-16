@@ -21,6 +21,10 @@ packages = ["src/app"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# Fail loud, not silent: --strict-config errors on a mistyped/unknown config key, --strict-markers
+# on an unregistered marker. Both are the class of error that otherwise erodes the "tests ran and
+# were configured as intended" guarantee by passing green. (design Item 2)
+addopts = "--strict-config --strict-markers"
 
 [tool.ruff]
 line-length = 100

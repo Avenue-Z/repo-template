@@ -33,24 +33,29 @@ emergency-bypass design is even correct.
 **The osv-scanner pattern, applied to first-party code.** Bandit walks the Python AST for
 vulnerability patterns — `shell=True`/`subprocess` injection, `yaml.load`, `pickle`, hardcoded
 secrets, weak crypto, SQL built by string concatenation, `assert` in production paths. It runs as a
-plain workflow that **fails the `ci` job** on findings that clear the tier's threshold; no Security
-tab, no Advanced Security.
+**`bandit` job in the `python` stack's existing `ci.yml`**, surfacing through the already-required
+`ci` check on findings that clear the tier's threshold; no Security tab, no Advanced Security. (Why
+the existing `ci` check and not a dedicated workflow is spelled out under *Wiring* below — it is the
+lower-landmine design, not an open question.)
 
-### Decision: reuse Item 1's tier, gate on severity **and** confidence
+### Decision: reuse Item 1's tier selector; add confidence as a new, SAST-specific axis
 
-Bandit emits a **severity** *and* a **confidence** level (each low/med/high) per finding. That maps
-directly onto Item 1's "severity floor + threshold, never all-or-nothing" philosophy, so Part A does
-not invent a second policy dial — it **reuses Item 1's committed, CODEOWNERS-guarded policy value**:
+Bandit emits a **severity** *and* a **confidence** level (each low/med/high) per finding. Part A
+reuses Item 1's **tier selector** (`client-facing` blocks / `internal` warns) unchanged, but it does
+**not** inherit Item 1's blocking *rule* — it introduces a second axis Item 1 does not have:
 
 | Tier | Bandit blocks on | Everything else |
 |---|---|---|
 | `client-facing` (default) | **high severity AND high confidence** | warns |
 | `internal` | nothing | warns |
 
-Gating on high-confidence-too is the SAST analogue of Item 1's *never-block-without-a-fix* invariant:
-pattern SAST is noisier than dataflow, and a low-confidence hit is the SAST equivalent of an
-unactionable finding. Blocking only on high/high collapses the volume to the handful a small team can
-actually own — the same reasoning that rescued Item 1 from theater.
+Be honest about what this is. Item 1's invariant is *never block a finding with no available fix*
+([`sca-gate.sh`](../../../scripts/sca-gate.sh) header) — an axis **orthogonal to severity**, about
+whether a finding is *actionable*. Confidence is a different axis entirely: **false-positive
+likelihood**. They share only a spirit ("don't block on noise"), so confidence is a **new dial Part A
+adds**, justified on its own merits — pattern SAST false-positives where dataflow would not, and
+gating on high-confidence-too collapses the volume to the handful a small team can actually own. It
+is *not* a reuse of Item 1's fix-availability rule, and the Rejected section is worded to match.
 
 ### Self-contained, consistent with the template's posture
 
@@ -72,10 +77,54 @@ Suppression is in-code `# nosec` (or a checked-in `[tool.bandit]` skip list). Na
 the same class as Item 1's boundary: a suppression is a silent, un-expiring hole, and without a
 Security-tab dismissal trail the only control is code review of the diff that adds it.
 
+### Wiring — decided by the template's own structure
+
+Not an open question. **Bandit is a sibling `bandit` job in the `python` stack's `ci.yml`, and the
+`ci` aggregate's gate step is extended to fail on it.** The template hands us the required `ci`
+context to reuse; the load-bearing detail below is *how* Bandit's result reaches it, because the
+obvious wiring silently doesn't block.
+
+**The footgun: `needs` does not gate here.** `ci` is a bare aggregate with `if: always()`, and it
+blocks the merge only through one hand-rolled step that inspects `needs.test.result`
+([`ci.yml`](../../../templates/python/.github/workflows/ci.yml) lines 44-51). `if: always()`
+deliberately decouples the job from `needs` failure — so adding `bandit` to `needs: [test, bandit]`
+and stopping there ships **non-blocking SAST**: the `bandit` job goes red, but `bandit` is not a
+required context (only `ci` is), and the required `ci` check stays green because its gate step never
+looks at `needs.bandit.result`. Red check, green gate, PR merges — the exact theater this spec
+exists to kill. So the plan **must** extend the `ci` gate step to also `exit 1` on
+`needs.bandit.result != "success"`, mirroring the existing `test` check. (A Bandit *step* inside the
+`ci` job would also work, but that job is intentionally a bare result-gate with no
+checkout/setup-python; bolting a toolchain onto it is uglier than a sibling job + a two-line gate
+extension.)
+
+Why this home at all — it is the lower-landmine design:
+
+- Every generated stack repo already ships a `ci.yml` with a required `ci` context.
+  [`apply-rulesets.sh`](../../../scripts/apply-rulesets.sh) injects `ci` **only when
+  `.github/workflows/ci.yml` exists** (lines 74/97), and [`init-repo.sh`](../../../scripts/init-repo.sh)
+  copies that file per stack (presence asserted at line 293). The *core* `repo-template` has no
+  `ci.yml`, which is exactly why `template-tests/test_rulesets.sh:26-30` forbids `ci` in the
+  **committed core** rulesets — that assertion is about the core repo, **not** generated repos, which
+  do have a `ci` job.
+- Because `ci.yml` is **stack-scoped** (only `templates/python/` ships the Bandit-carrying one),
+  `node`/`next` repos never contain the `bandit` job at all. No new required context, nothing for
+  `init-repo.sh` to strip, and no PENDING-FOREVER risk — the pathology `sca.yml:16-19` warns about
+  bites only a *new required context that some stacks can't report*. Reusing the existing `ci`
+  context sidesteps it entirely.
+- A **dedicated `bandit` workflow** (the `sca.yml` shape) is the *worse* choice here. `sca` gets away
+  with a baked context because it is stack-**universal** (every stack has dependencies, so `sca`
+  always reports). A python-only `bandit` context would instead have to be conditionally injected per
+  stack and stripped for `node`/`next` — reintroducing precisely the hang that `ci.yml`'s
+  stack-scoping avoids. The osv/sca precedent does not transfer, because Bandit's scope does not
+  match sca's.
+
 ### Open decisions for the plan
 
-- Exact wiring: a dedicated `bandit` job vs. a step in the existing `ci` job; how the `python`-only
-  scope is expressed so `node`/`next` repos don't run it.
+- **Policy-file name.** Part A reads Item 1's tier from `.github/sca-policy.json` — a file named for
+  SCA now also driving a SAST gate reads as a mistake to the next person. Decide *with* Item 1:
+  rename to a stack-neutral `.github/security-policy.json` (a coordinated change that touches Item 1),
+  or keep the shared file and comment the reuse at both call sites. Pick one; do not leave it
+  implicit.
 - Config location: `pyproject.toml` `[tool.bandit]` vs. a `.bandit` file — follow whatever the
   `python` stack already uses for tool config.
 - The plan **must** confirm Item 1's policy value exists and is the exact key Part A reads (see
@@ -126,13 +175,16 @@ protection requires admin on the repo.
 # 1. A plain member creates a repo (or is given one created via the template).
 # 2. Query that member's own permission on it:
 gh api repos/Avenue-Z/<test-repo>/collaborators/<creator-login>/permission -q .permission
-# expect: "admin" | "maintain" | "write"
+# expect: "admin" | "write" | "read" | "none"
+# NB: -q .permission collapses to these four — a maintainer surfaces as "write", not "maintain".
+# The table only hinges on admin-vs-not, which this distinguishes; if you need the granular role,
+# query .role_name instead.
 ```
 
 | Answer | What it forces |
 |---|---|
 | **`admin`** | Repo creators self-serve protection. `apply-rulesets.sh` works for any member on repos they create; `CONTRIBUTING.md` can state "you own protection on repos you create." Adoption playbook unchanged. |
-| **`maintain`/`write`** | Non-owner creators **cannot** apply repo rulesets. `apply-rulesets.sh` must be run by an org owner (or protection comes only from the org ruleset). The adoption playbook and `CONTRIBUTING.md` must reassign that step to an owner — a real change to the net-new flow in `ADOPTION.md §1`. |
+| **anything but `admin`** (`write`/`read`/`none`) | Non-owner creators **cannot** apply repo rulesets. `apply-rulesets.sh` must be run by an org owner (or protection comes only from the org ruleset). The adoption playbook and `CONTRIBUTING.md` must reassign that step to an owner — a real change to the net-new flow in `ADOPTION.md §1`. |
 
 ### Q2 — Does a repo-level **bypass actor survive an org-level ruleset**, or does the org ruleset outrank it?
 
@@ -174,10 +226,12 @@ integration. Recorded here to keep the cutover checklist in one place; no design
 
 ## Dependencies
 
-- **Part A reads Item 1's policy value.** Item 1's committed, CODEOWNERS-guarded tier file/variable
-  must exist and be merged first; Part A's plan must confirm the exact key it reads. As of this
-  writing the parent hardening spec (and Item 1) live on `docs/sca-and-hardening-additions` and are
-  **not yet on `dev`** — Part A cannot merge ahead of it.
+- **Part A reads Item 1's policy value.** Item 1's implementation — `.github/workflows/sca.yml`,
+  [`scripts/sca-gate.sh`](../../../scripts/sca-gate.sh), and the committed, CODEOWNERS-guarded tier
+  file `.github/sca-policy.json` — lives on **`feat/sca-dependency-scanning`** and is **not yet on
+  `dev`**; Part A cannot merge ahead of it, and its plan must confirm the exact key it reads.
+  (The parent *design doc* is on `docs/sca-and-hardening-additions`, but the *files* Part A depends
+  on are on `feat/sca-dependency-scanning` — depend on the branch that actually carries them.)
 - Parts B and C depend only on the org reaching GitHub Team.
 
 ## Sequencing
@@ -192,10 +246,17 @@ plan, gated on the research protocol.
 ## Testing
 
 - **Part A:** a `template-tests/` case asserting (a) the Bandit gate ships with the `client-facing`
-  default (fail-safe), (b) it reads Item 1's committed policy value rather than a second dial, and
-  (c) the block threshold is **high-severity-AND-high-confidence**, encoded in the workflow logic,
-  not just prose. Optionally a negative test: a `python` stack with a seeded high/high finding must
-  make `ci` go red on `client-facing`, green on `internal`.
+  default (fail-safe), (b) it reads its **tier** from Item 1's committed policy file (not a second
+  *tier* dial — the confidence axis is a finding-filter inside the tier, not a new tier), (c) the
+  block threshold is **high-severity-AND-high-confidence**, encoded in the workflow logic, not just
+  prose, (d) **the `node` and `next` stacks contain no `bandit` job while their `ci` context still
+  reports** — the node/next no-hang property, asserted so a later refactor to a dedicated workflow
+  cannot silently reintroduce a pending-forever context, and **(e) — required, not optional —** a
+  `python` stack with a seeded high/high finding must turn the **`ci` context itself** red on
+  `client-facing` and green on `internal`. (e) is the only assertion that distinguishes "the gate
+  blocks the required `ci` check" from "the gate reddens a non-required `bandit` check and merges
+  anyway" — it is what catches the `needs`-doesn't-gate footgun in *Wiring*, so it must exercise
+  `ci` specifically, not merely "the workflow."
 - **Parts B & C:** out of scope for CI tests — B is Team-gated config and C is research whose output
   is decisions and `CONTRIBUTING.md` prose. Their verification is the probe results themselves.
 
@@ -210,8 +271,10 @@ plan, gated on the research protocol.
   only if it replaces CodeQL for TS coverage before the org reaches Team.
 - **A dormant/no-op CodeQL workflow committed now** — ships non-functional config that reads as
   coverage and does nothing; the exact theater the parent doc rejects. CodeQL lands at Team, live.
-- **A separate SAST policy dial** — three levels or a Bandit-specific tier is the severity matrix in
-  a policy costume. Part A reuses Item 1's two tiers; one honest dial, not two.
+- **A separate SAST policy *tier*** — a third level or a Bandit-specific tier is the severity matrix
+  in a policy costume. Part A reuses Item 1's two tiers verbatim. (It *does* add a confidence axis
+  *within* those tiers — see the Decision above — but that is a finding-filter, not a new tier, and
+  it is labeled as the new axis it is, not smuggled in as inheritance.)
 - **Attempting Part C now on Free** — the probes cannot return a valid answer without Team; running
   them on Free would launder "could not ask" into a false "it works," the precise failure
   `apply-org-ruleset.sh` was written to refuse.

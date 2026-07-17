@@ -59,6 +59,58 @@ cat > "$TMP/multi_affected_otherfix.json" <<'JSON'
   "groups": [ { "ids": ["GHSA-multi"], "max_severity": "9.1" } ] } ] } ] }
 JSON
 
+# --- qualitative-severity fallback: an advisory with NO CVSS vector (groups[].max_severity absent)
+# but a GitHub-style database_specific.severity. osv-scanner scores max_severity ONLY from a CVSS
+# vector, so these would score 0 without the fallback. Mirrors the four cases from the #41 review. ---
+
+# fixable HIGH carried ONLY by database_specific.severity, no max_severity -> MUST block (the regression
+# guard for the fallback fix; without it a future refactor of the severity select passes silently).
+cat > "$TMP/high_qual_fixed.json" <<'JSON'
+{ "results": [ { "packages": [ {
+  "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
+  "vulnerabilities": [ { "id": "GHSA-high-qual-fixed",
+    "database_specific": { "severity": "HIGH" },
+    "affected": [ { "package": {"name":"acme","ecosystem":"npm"},
+      "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"}, {"fixed":"1.0.1"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-high-qual-fixed"] } ] } ] } ] }
+JSON
+
+# HIGH (qualitative) but the only fix is for a DIFFERENT package -> must NOT block (matching-package invariant).
+cat > "$TMP/high_qual_otherfix.json" <<'JSON'
+{ "results": [ { "packages": [ {
+  "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
+  "vulnerabilities": [ { "id": "GHSA-high-qual-otherfix",
+    "database_specific": { "severity": "HIGH" },
+    "affected": [
+      { "package": {"name":"acme","ecosystem":"npm"},
+        "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"} ] } ] },
+      { "package": {"name":"acme-rails","ecosystem":"RubyGems"},
+        "ranges": [ { "type": "ECOSYSTEM", "events": [ {"introduced":"0"}, {"fixed":"2.0.0"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-high-qual-otherfix"] } ] } ] } ] }
+JSON
+
+# CRITICAL (qualitative), no fix anywhere -> must NOT block (no-fix-never-blocks invariant).
+cat > "$TMP/critical_qual_nofix.json" <<'JSON'
+{ "results": [ { "packages": [ {
+  "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
+  "vulnerabilities": [ { "id": "GHSA-crit-qual-nofix",
+    "database_specific": { "severity": "CRITICAL" },
+    "affected": [ { "package": {"name":"acme","ecosystem":"npm"},
+      "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-crit-qual-nofix"] } ] } ] } ] }
+JSON
+
+# MODERATE (qualitative) + fix -> must NOT block (below the High floor; the fallback must not over-trigger).
+cat > "$TMP/moderate_qual_fixed.json" <<'JSON'
+{ "results": [ { "packages": [ {
+  "package": { "name": "acme", "version": "1.0.0", "ecosystem": "npm" },
+  "vulnerabilities": [ { "id": "GHSA-mod-qual-fixed",
+    "database_specific": { "severity": "MODERATE" },
+    "affected": [ { "package": {"name":"acme","ecosystem":"npm"},
+      "ranges": [ { "type": "SEMVER", "events": [ {"introduced":"0"}, {"fixed":"1.0.1"} ] } ] } ] } ],
+  "groups": [ { "ids": ["GHSA-mod-qual-fixed"] } ] } ] } ] }
+JSON
+
 printf '{"results":[]}\n' > "$TMP/empty.json"
 
 # run the gate, capture its exit code WITHOUT tripping set -e (the lib pattern)
@@ -71,6 +123,12 @@ assert_eq 0 "$(gate_rc "$TMP/critical_nofix.json" "$TMP/client.json")"    "clien
 assert_eq 0 "$(gate_rc "$TMP/moderate_fixed.json" "$TMP/client.json")"    "client-facing does NOT block a MODERATE finding (below the High floor)"
 assert_eq 0 "$(gate_rc "$TMP/multi_affected_otherfix.json" "$TMP/client.json")" "client-facing does NOT block a HIGH finding whose only fix is for a DIFFERENT package (#1: fix scoped to the installed package)"
 assert_eq 0 "$(gate_rc "$TMP/empty.json"          "$TMP/client.json")"    "an empty report passes"
+
+echo "sca-gate: qualitative database_specific.severity fallback (no CVSS max_severity) keeps the same rules"
+assert_eq 1 "$(gate_rc "$TMP/high_qual_fixed.json"     "$TMP/client.json")" "client-facing blocks a fixable HIGH carried only by database_specific.severity (no CVSS score) — the fallback regression guard"
+assert_eq 0 "$(gate_rc "$TMP/high_qual_otherfix.json"  "$TMP/client.json")" "a qualitative HIGH whose only fix is for a DIFFERENT package does NOT block (matching-package invariant holds for the fallback)"
+assert_eq 0 "$(gate_rc "$TMP/critical_qual_nofix.json" "$TMP/client.json")" "a qualitative CRITICAL with NO fix does NOT block (no-fix-never-blocks invariant holds for the fallback)"
+assert_eq 0 "$(gate_rc "$TMP/moderate_qual_fixed.json" "$TMP/client.json")" "a qualitative MODERATE + fix does NOT block (below the High floor — the fallback must not over-trigger)"
 assert_eq 1 "$(gate_rc "$TMP/high_fixed.json"     "$TMP/malformed.json")" "a policy with no valid tier defaults to client-facing (strict) and still blocks"
 assert_eq 0 "$(gate_rc "$TMP/does-not-exist.json" "$TMP/client.json")"    "a missing/empty osv report passes (osv-scanner found no packages)"
 

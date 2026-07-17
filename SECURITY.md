@@ -58,8 +58,9 @@ store — where it survives even if the PR is closed unmerged.
 
 `.github/sca-policy.json` carries the dependency-scanning tier. Default `client-facing`: the `sca`
 check blocks CI on High/Critical vulnerabilities **that have a fix**. `internal`: warns only. The file
-is CODEOWNERS-guarded, so loosening it to `internal` takes a reviewed PR — it cannot be flipped
-silently under deadline pressure.
+is CODEOWNERS-guarded, so loosening it to `internal` routes the change to a code owner and surfaces it
+in the PR — but, as the CODEOWNERS section above says, that is routing, not enforcement: it does not by
+itself require approval, so a solo maintainer can still merge the downgrade themselves.
 
 But exposure changes over a repo's life: an internal tool can grow a public surface. **The tier is
 only as current as the last person who set it.** The template makes the setting visible and reviewed;

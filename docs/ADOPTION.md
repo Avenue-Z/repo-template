@@ -50,7 +50,8 @@ The whole point of the template: one click plus one script.
    is a deliberate one-time step here (same class as `apply-rulesets.sh`). The `sca` check enforces
    the tier in `.github/sca-policy.json` (default `client-facing`: blocks CI on High/Critical vulns
    **that have a fix**); these settings make that fix show up automatically. Downgrading the tier to
-   `internal` is a reviewed edit to that CODEOWNERS-guarded file — see `SECURITY.md`.
+   `internal` routes an edit to that CODEOWNERS-guarded file to a code owner and surfaces it in the PR
+   (routing, not required approval) — see `SECURITY.md`.
 
 6. **Fill in the skeleton.** Complete the `<!-- TODO -->` markers in `README.md` and `CLAUDE.md`, and
    install the local hook: `pre-commit install`.

@@ -97,8 +97,8 @@ fi
 
 echo "rulesets: required status check contexts match real workflow job keys"
 contexts=$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' "$REPO_RULESET" | sort)
-expected=$(printf 'guard-base-branch\nsecret-scan')
-assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {guard-base-branch, secret-scan}"
+expected=$(printf 'guard-base-branch\nsca\nsecret-scan')
+assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {guard-base-branch, sca, secret-scan}"
 
 # ---------------------------------------------------------------------------------------
 # THE THREE FIELDS THAT SILENTLY DEFANG A RULESET. Each of these was, at some point in this

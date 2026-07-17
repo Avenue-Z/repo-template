@@ -140,6 +140,8 @@ run_linked_token() { # -> sets $out. VERCEL_TOKEN set: the REST-API path, no hum
 
 DEPLOYS_OFF='{"git":{"deploymentEnabled":false}}'
 DEPLOYS_ON='{"git":{"deploymentEnabled":true}}'
+# The per-branch OBJECT form the success message tells operators to adopt to enable deploys.
+DEPLOYS_PER_BRANCH='{"git":{"deploymentEnabled":{"main":true,"staging":true,"dev":false}}}'
 
 # ---------------------------------------------------------------------------------------
 # THE INVARIANT: this script must not contain a deploy at all. A guard in front of a `vercel
@@ -195,6 +197,25 @@ else
 fi
 out_on="$out"
 assert_match "explains unspecified branches are deployable" 'UNSPECIFIED branch as deployable' "$out_on"
+if linked; then fail "it linked anyway"; else pass "nothing was linked"; fi
+
+# ---------------------------------------------------------------------------------------
+# The per-branch OBJECT form is a DELIBERATE, reviewed decision to enable deploys — the exact shape
+# the success message tells operators to adopt. link-vercel links with deploys OFF as a gate, so it
+# refuses a repo already past that gate, but HONESTLY: not with the missing/true-key message that
+# implies an accidental runaway deploy, and it must change nothing. A raw grep for
+# `"deploymentEnabled": false` could not tell this apart from a missing key — this is finding #1.
+echo "link-vercel: HONESTLY refuses the per-branch object form (deploys already enabled on purpose)"
+make_stubs "main" ""
+setup_repo "$DEPLOYS_PER_BRANCH"
+if run_linked; then
+  fail "linked a repo that already enabled deploys per-branch. Output: ${out}"
+else
+  pass "refuses the object form"
+fi
+out_pb="$out"
+assert_match   "recognizes the object form, not a missing key" 'already enables deploys per-branch' "$out_pb"
+assert_nomatch "does not misdiagnose it as an accidental runaway deploy" 'UNSPECIFIED branch as deployable' "$out_pb"
 if linked; then fail "it linked anyway"; else pass "nothing was linked"; fi
 
 # ---------------------------------------------------------------------------------------

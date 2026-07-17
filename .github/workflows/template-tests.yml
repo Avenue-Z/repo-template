@@ -26,7 +26,7 @@ jobs:
   template-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # jq is a hard dependency of apply-rulesets.sh / apply-org-ruleset.sh, and several suites
       # parse JSON with it. gh and python3 are preinstalled on ubuntu-latest; jq is too, but assert

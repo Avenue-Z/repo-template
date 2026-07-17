@@ -8,7 +8,7 @@
 
 **Tech Stack:** Bash (`gh` CLI, git), GitHub Actions, gitleaks, pre-commit; `templates/python` = hatchling + pytest + ruff + mypy; `templates/node` = vitest + eslint + tsc.
 
-**Spec:** `docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md` — read it before Task 1. Its 15 success criteria are the acceptance tests; each is mapped to a task below.
+**Spec:** `template-docs/specs/2026-07-13-avenue-z-repo-template-design.md` — read it before Task 1. Its 15 success criteria are the acceptance tests; each is mapped to a task below.
 
 ## Global Constraints
 
@@ -1620,7 +1620,7 @@ rm -rf /tmp/tmpl-probe /tmp/tmpl-probe-node
 - [ ] **Step 7: Record the outcome in the spec's review log**
 
 Append a "Build verified — <date>" section to
-`docs/superpowers/specs/2026-07-13-avenue-z-repo-template-design.md` listing each of the 15 criteria
+`template-docs/specs/2026-07-13-avenue-z-repo-template-design.md` listing each of the 15 criteria
 and whether it passed, with the command output that proves it. Commit on a `docs/*` branch and PR into
 `dev`.
 

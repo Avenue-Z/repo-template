@@ -26,7 +26,10 @@ assert_file "vercel.json"       "$VJ"
 # and the repo becomes unmergeable. So the job key must be LITERALLY `ci`, not `build`, not a
 # matrix (a matrix leg is named "ci (20)", and a bare "ci" context would never exist).
 echo "next stack: the ci job must be named exactly 'ci' and must not be a matrix"
-if grep -A1 '^jobs:' "$CI" | tail -1 | grep -q '^  ci:$'; then
+# Match the job key anywhere at top-level job indent, not just the line immediately after `jobs:`.
+# The old `grep -A1 '^jobs:' | tail -1` assumed no comment sits between `jobs:` and the key — a
+# comment there (the style used throughout this repo) would false-fail a correct workflow.
+if grep -qE '^  ci:$' "$CI"; then
   pass "jobs key is literally 'ci'"
 else
   fail "the job key must be literally 'ci' — the ruleset requires that exact context"

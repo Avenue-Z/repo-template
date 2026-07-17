@@ -53,7 +53,7 @@ set -euo pipefail
 DRY=0
 PROD_BRANCH="main"
 
-warn() { printf '\033[33mWARN\033[0m  %s\n' "$*"; }
+warn() { printf '\033[33mWARN\033[0m  %s\n' "$*" >&2; }
 info() { printf '\033[32m--\033[0m    %s\n' "$*"; }
 die()  { printf '\033[31mERROR\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -74,14 +74,36 @@ command -v jq     >/dev/null 2>&1 || die "jq is required but not installed. Inst
 # ------------------------------------------------------------------ the deploys-off invariant
 # Check this BEFORE linking. If vercel.json does not disable deployments, then linking the project
 # is the moment deploys start firing — and by then it is too late to warn about it.
-if ! grep -q '"deploymentEnabled": *false' vercel.json; then
-  die "vercel.json does not carry \"deploymentEnabled\": false.
+# Classify what vercel.json says about deploys with jq (a hard dependency, checked above) — NOT a
+# raw grep. The success message below tells operators to switch to the per-branch OBJECT form to
+# turn deploys ON, and a text match for `"deploymentEnabled": false` cannot tell that deliberate,
+# reviewed config apart from a missing key. `|| echo unsafe` fails closed on a malformed file.
+#   off        -> the normal path: link with deploys off, verify, and let a later PR enable them.
+#   per-branch -> deploys are already enabled deliberately. Refuse HONESTLY (see below), not as if
+#                 it were an accident, and change nothing.
+#   unsafe     -> true, missing, or unparseable: Vercel treats unspecified branches as deployable,
+#                 so linking now is the runaway-deploy moment this file exists to prevent.
+deploy_state="$(jq -r '
+  .git.deploymentEnabled as $d
+  | if ($d == false) then "off" elif (($d | type) == "object") then "per-branch" else "unsafe" end
+' vercel.json 2>/dev/null || echo unsafe)"
+case "${deploy_state}" in
+  off) info "vercel.json disables deployments — linking will not start any deploys" ;;
+  per-branch)
+    die "vercel.json already enables deploys per-branch (the \"deploymentEnabled\" object form).
+
+       NOT LINKING, and nothing was changed. This script links with deploys OFF as a gate — it is
+       meant to run BEFORE you enable deploys, not after. A repo already carrying the object form
+       has passed that gate, so there is nothing here for it to link safely. To re-verify an
+       existing link (that production-branch tracking is still correct), check by hand:
+           Vercel dashboard -> Project -> Settings -> Environments -> Production -> Branch Tracking" ;;
+  *)
+    die "vercel.json does not carry \"deploymentEnabled\": false.
 
        REFUSING TO LINK. Vercel treats every UNSPECIFIED branch as deployable, so linking now
        would start deploying on the next push — including a production deploy. If you genuinely
-       mean to enable deploys, do it as a reviewed PR that says so, and link afterwards."
-fi
-info "vercel.json disables deployments — linking will not start any deploys"
+       mean to enable deploys, do it as a reviewed PR that says so, and link afterwards." ;;
+esac
 
 # ------------------------------------------------------------------------- the human gate
 # vercel link is interactive (scope + project selection) and requires a real login. We refuse to

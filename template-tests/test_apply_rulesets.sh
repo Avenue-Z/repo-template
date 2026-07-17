@@ -30,6 +30,11 @@ else
   assert_nomatch "'ci' is NOT listed as a required status check" 'required: ci$' "$out"
   assert_match   "'guard-base-branch' is listed as required" 'required: guard-base-branch' "$out"
   assert_match   "'secret-scan' is listed as required" 'required: secret-scan' "$out"
+  # The MIRROR of the anti-brick case: the template DOES carry template-tests.yml, so the file-gated
+  # add_context MUST inject 'template-tests' here. Asserting the injection (not just its absence when
+  # the workflow is gone) is the behavioral coverage the file-gating condition otherwise lacked — a
+  # regression that required it unconditionally would hang every PR in a generated repo pending forever.
+  assert_match   "'template-tests' IS listed as required (its workflow is present in the template)" 'required: template-tests' "$out"
 fi
 
 # ---------------------------------------------------------------------------------------

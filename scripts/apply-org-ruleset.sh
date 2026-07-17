@@ -38,7 +38,7 @@ ORG="Avenue-Z"
 SRC=".github/rulesets/org-ruleset.json"
 DRY=0
 
-warn() { printf '\033[33mWARN\033[0m  %s\n' "$*"; }
+warn() { printf '\033[33mWARN\033[0m  %s\n' "$*" >&2; }
 info() { printf '\033[32m--\033[0m    %s\n' "$*"; }
 die()  { printf '\033[31mERROR\033[0m %s\n' "$*" >&2; exit 1; }
 

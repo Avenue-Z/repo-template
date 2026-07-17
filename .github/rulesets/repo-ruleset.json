@@ -40,6 +40,9 @@
           },
           {
             "context": "secret-scan"
+          },
+          {
+            "context": "sca"
           }
         ]
       }

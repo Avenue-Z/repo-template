@@ -104,7 +104,7 @@ done
 echo "config + docs: config home is pyproject.toml, and the boundaries are stated in SECURITY.md"
 assert_match "python pyproject.toml declares [tool.bandit] as the config home" '^\[tool\.bandit\]' "$(cat templates/python/pyproject.toml)"
 sec="$(cat SECURITY.md)"
-assert_match "SECURITY.md states Bandit is AST-pattern, not dataflow" 'AST' "$sec"
+assert_match "SECURITY.md states Bandit is AST-pattern, not dataflow" 'AST-pattern' "$sec"
 assert_match "SECURITY.md names the node/next TypeScript unscanned gap" 'unscanned' "$sec"
 assert_match "SECURITY.md names the nosec suppression as a silent hole" 'nosec' "$sec"
 

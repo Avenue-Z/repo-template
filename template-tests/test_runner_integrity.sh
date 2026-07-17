@@ -16,8 +16,12 @@ PY=templates/python/pyproject.toml
 assert_file "python pyproject.toml exists" "$PY"
 py="$(cat "$PY")"
 assert_match "pyproject declares pytest addopts"                 'addopts'          "$py"
-assert_match "pytest addopts carries --strict-config (unknown config key -> error)"  '\-\-strict-config'  "$py"
-assert_match "pytest addopts carries --strict-markers (unknown marker -> error)"     '\-\-strict-markers' "$py"
+# Anchor to the addopts VALUE line, not the whole file: --strict-config/--strict-markers also
+# appear in the explanatory comment above addopts, so a whole-file grep stays green even if the
+# real addopts value is gutted — the exact tamper this test exists to catch. Requiring the flag on
+# the `addopts = ...` line means the comment alone cannot satisfy the assertion.
+assert_match "pytest addopts carries --strict-config (unknown config key -> error)"  'addopts[[:space:]]*=.*\-\-strict-config'  "$py"
+assert_match "pytest addopts carries --strict-markers (unknown marker -> error)"     'addopts[[:space:]]*=.*\-\-strict-markers' "$py"
 
 echo "next: vitest must fail on zero tests, set explicitly so a config edit cannot open it"
 NV=templates/next/vitest.config.ts

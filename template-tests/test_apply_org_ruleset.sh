@@ -40,7 +40,12 @@ chmod +x "${STUB}/gh"
 
 export ORG_STUB_LOG="${STUB}/applied.log"
 : > "${ORG_STUB_LOG}"
-STUB_PATH="PATH=${STUB}:${PATH} ORG_STUB_LOG=${ORG_STUB_LOG}"
+# This prefix is spliced into a command string that lib.sh's pty_run runs via `bash -c`. Do NOT
+# bake ${PATH} in raw: a host PATH with a space in it (e.g. macOS's ".../Application Support")
+# splits the assignment into a bogus command word and the whole pty exec fails with 127. Quote the
+# stub segment and let the INNER shell expand $PATH, the same way test_link_vercel.sh's run_linked
+# does. The single quotes also protect a spaced ${STUB}/${ORG_STUB_LOG} from mktemp under $TMPDIR.
+STUB_PATH="PATH='${STUB}:'\"\$PATH\" ORG_STUB_LOG='${ORG_STUB_LOG}'"
 
 applied() { [ -s "${ORG_STUB_LOG}" ]; }
 reset_log() { : > "${ORG_STUB_LOG}"; }
@@ -100,7 +105,13 @@ PHRASE="apply avenue-z-branch-protection-org to all 3 repos in Avenue-Z"
 
 echo "apply-org-ruleset: a wrong phrase aborts and applies nothing"
 reset_log
-out_wrong="$(pty_run "y" "${STUB_PATH} ${SCRIPT}")"
+# Guard the capture. pty_run now propagates the child's exit code, so a bare `out=$(pty_run ...)`
+# under `set -euo pipefail` would abort THIS ENTIRE FILE — skipping Defence 3, the bricking-payload
+# refusal below — if the pty ever exits non-zero. A wrong phrase itself exits 0 (an honest decline),
+# so any non-zero here is a harness failure, and it must fail loudly, not silently swallow the file.
+if ! out_wrong="$(pty_run "y" "${STUB_PATH} ${SCRIPT}")"; then
+  fail "pty_run failed before the wrong-phrase check — the harness aborted, Defence 3 never ran. Output: ${out_wrong}"
+fi
 assert_match "prints the phrase the operator must type" "${PHRASE}" "$out_wrong"
 assert_match "aborts on a wrong answer" 'did not match' "$out_wrong"
 if applied; then fail "a bare 'y' APPLIED the ruleset — muscle memory must not be enough"; else pass "'y' is NOT enough (applied nothing)"; fi
@@ -109,13 +120,17 @@ echo "apply-org-ruleset: a STALE phrase (wrong repo count) is refused"
 # The live count is interpolated into the phrase precisely so a phrase copied from a runbook or
 # remembered from last quarter goes WRONG as the org grows — and wrong means refuse.
 reset_log
-out_stale="$(pty_run "apply avenue-z-branch-protection-org to all 64 repos in Avenue-Z" "${STUB_PATH} ${SCRIPT}")"
+if ! out_stale="$(pty_run "apply avenue-z-branch-protection-org to all 64 repos in Avenue-Z" "${STUB_PATH} ${SCRIPT}")"; then
+  fail "pty_run failed before the stale-phrase check — the harness aborted, Defence 3 never ran. Output: ${out_stale}"
+fi
 assert_match "a phrase with a stale count aborts" 'did not match' "$out_stale"
 if applied; then fail "a stale-count phrase APPLIED the ruleset"; else pass "a stale-count phrase applied nothing"; fi
 
 echo "apply-org-ruleset: the EXACT phrase, typed at a terminal, is what applies it"
 reset_log
-out_ok="$(pty_run "${PHRASE}" "${STUB_PATH} ${SCRIPT}")"
+if ! out_ok="$(pty_run "${PHRASE}" "${STUB_PATH} ${SCRIPT}")"; then
+  fail "pty_run failed on the exact-phrase happy path — the harness aborted, Defence 3 never ran. Output: ${out_ok}"
+fi
 assert_match "reports it created the org ruleset" 'created new org ruleset' "$out_ok"
 if applied; then pass "the exact phrase DID apply it (the happy path still works)"; else fail "the exact phrase did not apply — the script is now unusable. Output: ${out_ok}"; fi
 

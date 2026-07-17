@@ -36,6 +36,7 @@ assert_no_dir  "template-tests/ removed from working tree" template-tests
 # The template's OWN design docs live in template-docs/ (not docs/superpowers/{specs,plans}/, so a
 # spec the adopter already wrote is never deleted). init-repo removes the whole dir wholesale.
 assert_no_dir  "template-docs/ removed from working tree" template-docs
+assert_no_file "the template's own test_sca.sh did not ship (it lives in template-tests/)" template-tests/test_sca.sh
 # The WORKFLOW that runs that suite must go too. If it stayed, a generated repo would ship a job
 # that runs a directory init-repo just deleted — and the moment anyone added `template-tests` to
 # that repo's required checks, it would never report and hang every PR PENDING FOREVER.
@@ -43,10 +44,21 @@ assert_no_file "template-tests.yml workflow removed (it runs a suite that no lon
 # The workflows a generated repo SHOULD keep must survive the cull.
 assert_file    "guard-base-branch.yml survived" .github/workflows/guard-base-branch.yml
 assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
+assert_file    "sca.yml survived (core workflow, ships into generated repos)" .github/workflows/sca.yml
+assert_file    "sca-policy.json survived" .github/sca-policy.json
+assert_file    "sca-gate.sh survived" scripts/sca-gate.sh
+# Same class as the SCA scripts above: the generated python repo's required `ci` check runs both of
+# these (bandit job + ci aggregate gate). If a future init-repo.sh ever dropped or relocated scripts/,
+# every generated python repo's `ci` check would fail with a missing-file error and no test would catch
+# it. Guard their survival the same way sca-gate.sh is guarded.
+assert_file    "bandit-gate.sh survived (python ci bandit job depends on it)" scripts/bandit-gate.sh
+assert_file    "ci-aggregate-gate.sh survived (python ci gate depends on it)" scripts/ci-aggregate-gate.sh
 # The generated repo's specs/ and plans/ must carry nothing but their README. This ALSO guards the
 # template's own convention: a template design doc misplaced into docs/superpowers/specs/ (where the
 # superpowers skills write by default) instead of template-docs/ would survive init and ship into
 # every generated repo. Catching a stray dated doc here turns that silent rot into a red test.
+# By pattern, not by filename: a spec added tomorrow must not slip through the way 2026-07-14 once
+# did when this asserted only the 2026-07-13 files by name. Nothing but a README may remain.
 leftover_docs="$(find docs/superpowers/specs docs/superpowers/plans -maxdepth 1 -type f -name '*.md' ! -name 'README.md')"
 if [ -z "${leftover_docs}" ]; then
   pass "no design docs survived in specs/ or plans/ (template docs belong in template-docs/)"

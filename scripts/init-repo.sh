@@ -391,4 +391,8 @@ Done. Next:
   1. pre-commit install
   2. Fill in the TODOs in README.md and CLAUDE.md
   3. ./scripts/apply-rulesets.sh          # adds 'ci' to required checks now that ci.yml exists
+  4. Enable Dependabot security updates (a repo setting — turns 'sca' findings into fix PRs):
+       REPO="\$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+       gh api -X PUT "repos/\${REPO}/vulnerability-alerts"
+       gh api -X PUT "repos/\${REPO}/automated-security-fixes"
 EOF

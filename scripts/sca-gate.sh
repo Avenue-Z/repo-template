@@ -39,10 +39,13 @@ if [ -n "${all_ids}" ]; then
 fi
 
 # A "blocking" finding = severity High/Critical AND a fix is available FOR THE INSTALLED PACKAGE.
-#   Severity: osv-scanner's own computed CVSS base score, groups[].max_severity (a number like
-#     "8.1"), populated regardless of advisory source — more robust and language-agnostic than the
-#     source-specific database_specific.severity. High/Critical = CVSS >= 7.0. A group with no
-#     usable score (absent/empty) scores 0 and never blocks.
+#   Severity: prefer osv-scanner's own computed CVSS base score, groups[].max_severity (a number like
+#     "8.1") — language-agnostic and version-normalized. High/Critical = CVSS >= 7.0. But max_severity
+#     is derived ONLY from a record's CVSS severity[] vector; osv-scanner leaves it EMPTY when the
+#     advisory carries no CVSS vector (e.g. a GHSA rated only with GitHub's qualitative
+#     database_specific.severity). To keep those from silently scoring 0, we fall back to the
+#     qualitative severity and treat HIGH/CRITICAL as High/Critical too. A group with neither a usable
+#     CVSS score NOR a HIGH/CRITICAL qualitative label scores 0 and never blocks.
 #   Fix available FOR YOUR DEP: a single OSV record's affected[] can list many packages across
 #     ecosystems (e.g. an npm advisory that also lists a RubyGems port). We require a `fixed` event
 #     on the affected[] entry whose package name AND ecosystem match the ENCLOSING installed
@@ -52,8 +55,14 @@ blocking="$(jq -r '
   [ .results[]?.packages[]? as $p
     | ($p.package.name) as $pn | ($p.package.ecosystem) as $pe
     | $p.groups[]?
-    | select( ((.max_severity // "") | tonumber? // 0) >= 7.0 )
     | . as $g
+    | select(
+        ( ((.max_severity // "") | tonumber? // 0) >= 7.0 )
+        or any( $p.vulnerabilities[]?;
+                (.id) as $vid
+                | ( ($g.ids // []) | index($vid) ) != null
+                and ( (.database_specific.severity // "") | ascii_upcase
+                      | (. == "HIGH" or . == "CRITICAL") ) ) )
     | select( any( $p.vulnerabilities[]?;
                    (.id) as $vid
                    | ( ($g.ids // []) | index($vid) ) != null

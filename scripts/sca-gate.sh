@@ -15,6 +15,10 @@ set -euo pipefail
 OSV_JSON="${1:?usage: sca-gate.sh <osv-json> <policy-json>}"
 POLICY="${2:?usage: sca-gate.sh <osv-json> <policy-json>}"
 
+# NOTE: .github/sca-policy.json's `.tier` is SHARED — scripts/bandit-gate.sh (Item 4 SAST) reads the
+# same dial. The file name says 'sca' but the tier is stack-neutral; both gates honour it. See
+# SECURITY.md. If this is ever renamed, update bandit-gate.sh, sca.yml, ci.yml and both test suites.
+
 command -v jq >/dev/null 2>&1 || { echo "::error::jq is required but not installed" >&2; exit 2; }
 
 # Fail-safe: an unreadable or tier-less policy is treated as the STRICT default, never as a bypass.

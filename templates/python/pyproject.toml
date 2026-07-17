@@ -37,3 +37,11 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 strict = true
 files = ["src"]
+
+[tool.bandit]
+# Bandit (Item 4 Part A SAST) config home — the stack keeps tool config here, like ruff/mypy above.
+# CI already scopes the scan to first-party source with `bandit -r src`; tests legitimately use
+# `assert` and subprocess in ways that are not production risks, so they are not scanned. Suppress an
+# individual finding in-code with `# nosec <TEST_ID>` (reviewed in the diff) — see SECURITY.md for
+# why a suppression here is a silent, un-expiring hole. Add long-lived, team-agreed skips below.
+exclude_dirs = ["tests"]

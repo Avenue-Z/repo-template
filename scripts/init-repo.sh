@@ -301,7 +301,11 @@ if [ "${STACK}" = next ]; then
   [ -f vercel.json ] || die "copy failed: vercel.json missing.
        Refusing to continue: vercel.json is what keeps deploys OFF by default. Without it, Vercel
        treats every branch as deployable and linking the project would start deploying immediately."
-  grep -q '"deploymentEnabled": *false' vercel.json \
+  # Parse with jq (a hard dependency), not a raw grep: this verifies the CONTROL file the template
+  # just copied is intact. Unlike link-vercel.sh's check, there is no per-branch object form to
+  # accept here — at init time vercel.json is the freshly-copied template, which ships `false`.
+  # Anything else means the copy is wrong, so require exactly `false` and fail closed otherwise.
+  [ "$(jq -r '.git.deploymentEnabled' vercel.json 2>/dev/null)" = false ] \
     || die "vercel.json does not disable deployments. Refusing to continue: the template ships
        deploys OFF so that enabling one is a reviewed change, not an accident."
   info "vercel.json present — deploys are OFF until someone enables a branch in a PR"
@@ -338,29 +342,27 @@ add_dependabot_ecosystem
 #                      the box. It lives in template-tests/ — not tests/ — precisely so this
 #                      one `rm -rf` removes it wholesale without touching the stack's own
 #                      tests/ skeleton, which we just copied in.
-#   the template's own spec/plan — 500 lines about repo-template itself, meaningless in a
-#                      generated repo. The empty docs/superpowers/{specs,plans}/ dirs and
-#                      their README + .gitkeep stay: that is where the new repo's OWN
-#                      specs and plans go.
+#   template-docs/    — the template's OWN design docs (its specs and plans, ~500 lines about
+#                      repo-template itself). They live OUTSIDE docs/superpowers/{specs,plans}/
+#                      — the dirs the generated repo uses for ITS docs — precisely so this one
+#                      `rm -rf` removes them wholesale WITHOUT touching a spec the adopter may
+#                      have already written. Matching those dirs by pattern instead would delete
+#                      the adopter's own first spec along with the template's. The empty
+#                      docs/superpowers/{specs,plans}/ dirs and their README + .gitkeep stay:
+#                      that is where the new repo's own specs and plans go. (New TEMPLATE design
+#                      docs must be authored into template-docs/, not docs/superpowers/specs/ —
+#                      test_init_repo.sh fails if a dated doc is left in the latter.)
 #
 # init-repo.sh does NOT delete itself: criterion 7 requires a re-run to be a no-op exiting 0,
 # and a self-deleting script cannot be re-run. The re-run IS the recovery path for a first run
 # that died partway. scripts/ keeps apply-rulesets.sh regardless.
-rm -rf templates template-tests
+rm -rf templates template-tests template-docs
 # The workflow that RUNS that suite must go with it. If it stayed, a generated repo would ship a
 # job that runs a directory we just deleted — and if `template-tests` were ever a required check
 # there, it would never report and hang every PR PENDING FOREVER. That is why apply-rulesets.sh
 # requires the context only when the workflow file is actually present.
 rm -f .github/workflows/template-tests.yml
-info "removed templates/, template-tests/ and its workflow (the template's own self-tests)"
-
-# Strip every design doc the TEMPLATE wrote about ITSELF. Match by pattern, not by listing today's
-# filenames: enumerating them is exactly why 2026-07-14 (and this feature's own 2026-07-15 spec) once
-# shipped into generated repos untouched. The generated repo keeps the empty specs/ and plans/ dirs
-# (their README + .gitkeep) for its OWN docs — of which a fresh repo has none — so removing every
-# *.md that is not a README here is safe, and cannot rot when the next template spec is added.
-find docs/superpowers/specs docs/superpowers/plans -maxdepth 1 -type f -name '*.md' ! -name 'README.md' -delete
-info "removed the template's own design docs (specs + plans)"
+info "removed templates/, template-tests/, template-docs/ and the self-tests workflow"
 
 # The front door is template-only. README.md is the TEMPLATE's GitHub landing page; the seed a
 # generated repo starts from lives in README.repo.tmpl — a .tmpl suffix so GitHub renders the front
@@ -389,4 +391,8 @@ Done. Next:
   1. pre-commit install
   2. Fill in the TODOs in README.md and CLAUDE.md
   3. ./scripts/apply-rulesets.sh          # adds 'ci' to required checks now that ci.yml exists
+  4. Enable Dependabot security updates (a repo setting — turns 'sca' findings into fix PRs):
+       REPO="\$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+       gh api -X PUT "repos/\${REPO}/vulnerability-alerts"
+       gh api -X PUT "repos/\${REPO}/automated-security-fixes"
 EOF

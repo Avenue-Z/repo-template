@@ -60,4 +60,45 @@ else
   skip "bandit not installed — schema-fidelity check not run"
 fi
 
+# =======================================================================================
+# §Testing (e): a seeded high/high finding must turn the required `ci` CONTEXT red on
+# client-facing and green on internal. `ci` reddens ONLY through scripts/ci-aggregate-gate.sh,
+# so drive it directly (the guard-base-branch pattern) and COMPOSE it with the bandit verdict.
+CIGATE=scripts/ci-aggregate-gate.sh
+ci_gate_rc() { local rc=0; "$CIGATE" "$@" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+
+echo "ci-aggregate-gate: any non-success job result reddens the ci check"
+assert_eq 0 "$(ci_gate_rc "test:success" "bandit:success")"  "all jobs success -> ci green"
+assert_eq 1 "$(ci_gate_rc "test:success" "bandit:failure")"  "bandit failed -> ci red"
+assert_eq 1 "$(ci_gate_rc "test:failure" "bandit:success")"  "test failed -> ci red (existing invariant preserved)"
+
+echo "ci context (e): high/high blocks the CI check on client-facing, warns on internal"
+# client-facing: bandit-gate blocks -> the bandit JOB would be 'failure' -> ci gate reddens.
+brc="$(gate_rc "$TMP/high_high.json" "$TMP/client.json")"; assert_eq 1 "$brc" "client-facing: bandit job fails on high/high"
+bres="$([ "$brc" -eq 0 ] && echo success || echo failure)"
+assert_eq 1 "$(ci_gate_rc "test:success" "bandit:$bres")" "client-facing high/high turns the required 'ci' check RED"
+# internal: bandit-gate warns -> the bandit JOB is 'success' -> ci gate stays green.
+brc="$(gate_rc "$TMP/high_high.json" "$TMP/internal.json")"; assert_eq 0 "$brc" "internal: bandit job succeeds (warn only) on high/high"
+bres="$([ "$brc" -eq 0 ] && echo success || echo failure)"
+assert_eq 0 "$(ci_gate_rc "test:success" "bandit:$bres")" "internal high/high leaves the 'ci' check GREEN"
+
+echo "ci.yml wiring: the python ci job actually gates on bandit's result"
+PYCI=templates/python/.github/workflows/ci.yml
+pyci="$(cat "$PYCI")"
+assert_match "python ci.yml declares a 'bandit:' job"                 '^[[:space:]]*bandit:[[:space:]]*$' "$pyci"
+assert_match "python ci.yml runs scripts/bandit-gate.sh"             'scripts/bandit-gate\.sh'           "$pyci"
+assert_match "python ci job 'needs' includes bandit"                  'needs:.*bandit'                    "$pyci"
+assert_match "python ci gate calls scripts/ci-aggregate-gate.sh"     'scripts/ci-aggregate-gate\.sh'     "$pyci"
+assert_match "python ci gate passes needs.bandit.result to the gate"  'needs\.bandit\.result'             "$pyci"
+
+echo "no-hang property (d): node and next carry NO bandit job, but their ci context still reports"
+for stack in node next; do
+  wf="templates/$stack/.github/workflows/ci.yml"
+  assert_file "$stack has a ci.yml" "$wf"
+  txt="$(cat "$wf")"
+  assert_nomatch "$stack ci.yml has NO bandit job" '^[[:space:]]*bandit:[[:space:]]*$' "$txt"
+  assert_nomatch "$stack ci.yml never runs bandit-gate.sh" 'bandit-gate\.sh' "$txt"
+  assert_match   "$stack ci.yml still declares a 'ci:' job (context reports)" '^[[:space:]]*ci:[[:space:]]*$' "$txt"
+done
+
 finish

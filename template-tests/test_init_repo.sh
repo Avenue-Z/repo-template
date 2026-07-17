@@ -44,6 +44,12 @@ assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
 assert_file    "sca.yml survived (core workflow, ships into generated repos)" .github/workflows/sca.yml
 assert_file    "sca-policy.json survived" .github/sca-policy.json
 assert_file    "sca-gate.sh survived" scripts/sca-gate.sh
+# Same class as the SCA scripts above: the generated python repo's required `ci` check runs both of
+# these (bandit job + ci aggregate gate). If a future init-repo.sh ever dropped or relocated scripts/,
+# every generated python repo's `ci` check would fail with a missing-file error and no test would catch
+# it. Guard their survival the same way sca-gate.sh is guarded.
+assert_file    "bandit-gate.sh survived (python ci bandit job depends on it)" scripts/bandit-gate.sh
+assert_file    "ci-aggregate-gate.sh survived (python ci gate depends on it)" scripts/ci-aggregate-gate.sh
 # By pattern, not by filename: a spec added tomorrow must not slip through the way 2026-07-14 once
 # did when this asserted only the 2026-07-13 files by name. Nothing but a README may remain.
 leftover_docs="$(find docs/superpowers/specs docs/superpowers/plans -maxdepth 1 -type f -name '*.md' ! -name 'README.md')"

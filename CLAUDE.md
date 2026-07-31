@@ -34,6 +34,10 @@ Declared in `.env.example`. Copy to `.env.local`. Never commit `.env.local`.
    have not seen.
 4. Never commit credentials. `.gitignore` is a denylist and denylists leak; `secret-scan` is the
    real control.
+5. **Python repos:** if this repo reads external data or emits a deliverable, it needs a data
+   contract. Do not hand-author one — run `contract init` (see `README.md`). `contract lint` and
+   `contract reconcile` are the gate; a boundary starts at `mode: observe` and is promoted only
+   once `contract events` reports it clean.
 
 ## Project rules
 <!-- TODO: the rules specific to THIS repo. Keep them durable. -->

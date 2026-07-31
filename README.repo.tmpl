@@ -46,6 +46,41 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
 - `docs/notes/` — dated working notes
 - `CONTRIBUTING.md` — branch flow. **Never push directly to `main`.**
 
+## Data contracts
+
+**Python only.** If this repo reads external data — a vendor API, an MCP tool, a CSV drop, LLM
+output — or emits a deliverable, it should declare a data contract. One artifact buys two checks:
+runtime validation at the boundary, and static reconciliation that the code still matches the
+declared design.
+
+Do not hand-author it. From the repo root:
+
+    pip install "contract-core @ git+https://github.com/Avenue-Z/data-contract.git@<tag>"
+    contract init --system <name> --platform <platform> --source <api|mcp|llm|file>
+
+`--platform` takes letters, digits, hyphens and underscores only — `google-ads`, **not**
+`google.ads`. A dot is a segment separator in a schema ref, so a dotted platform generates refs
+that will not resolve against the tree it just wrote.
+
+`contract init` writes `contract.yaml`, the schema tree, the boundary wiring, a drift test and the
+CI workflow. It is a **retrofit** command — run it once this repo's package has its real name, not
+on day one. Re-running it fills gaps and never overwrites.
+
+Two things it deliberately leaves you: the schema **fields** are `REPLACE_ME_` placeholders until
+you author them from the real columns, and the generated drift test fails on purpose until you
+write the assertion. Both are named in its output.
+
+**`contract-core` requires Python 3.13.** This repo ships `requires-python = ">=3.11"` and a
+3.11/3.12/3.13 CI matrix; adopting contracts means narrowing both to 3.13 — otherwise the pin fails
+to install on the two older legs.
+
+**There is no node/next path.** `contract-core` is pandera/pandas and the CI gate needs an
+importable Python package. A non-Python repo that needs a contract should move the external read
+into a Python job that owns it, and consume already-validated data.
+
+Reference: `Avenue-Z/data-contract` `docs/consuming-repo-setup.md`, and the
+`authoring-data-contracts` Claude Code skill.
+
 ## Repo setup scripts (template-derived repos)
 
 - `scripts/init-repo.sh <python|node|next> [--team <slug>]` — selects the stack and creates

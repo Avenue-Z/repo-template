@@ -16,7 +16,8 @@
 
 ## Commands
 `make check` is the aggregate correctness gate (lint + typecheck + tests, plus `build` on next);
-ci.yml calls the same target, so the local command and the CI gate can never drift.
+ci.yml calls the same target, so the **correctness** steps can never drift between laptop and CI.
+(Install is still spelled out in both places — that's inherent to installing deps, not part of the gate.)
 
 | Task | Command |
 |---|---|

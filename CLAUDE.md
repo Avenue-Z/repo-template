@@ -15,11 +15,13 @@
 <!-- TODO: the 3-6 directories that matter and what each holds -->
 
 ## Commands
+`make check` is the aggregate correctness gate (lint + typecheck + tests, plus `build` on next);
+ci.yml calls the same target, so the local command and the CI gate can never drift.
+
 | Task | Command |
 |---|---|
 | Install | <!-- TODO --> |
-| Test | <!-- TODO --> |
-| Lint | <!-- TODO --> |
+| Check (mirrors CI) | `make check` |
 | Run | <!-- TODO --> |
 
 ## Env

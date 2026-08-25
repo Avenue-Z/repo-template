@@ -71,8 +71,10 @@ you author them from the real columns, and the generated drift test fails on pur
 write the assertion. Both are named in its output.
 
 **`contract-core` requires Python 3.13.** This repo ships `requires-python = ">=3.11"` and a
-3.11/3.12/3.13 CI matrix; adopting contracts means narrowing both to 3.13 — otherwise the pin fails
-to install on the two older legs.
+3.11/3.12/3.13 CI matrix. Narrow `requires-python`, `[tool.ruff] target-version`,
+`[tool.mypy] python_version`, the `ci.yml` matrix **and the `Dockerfile` base image** together —
+otherwise the pin fails to install on the two older legs, and leaving the `Dockerfile` behind
+reproduces Avenue-Z/data-contract#53.
 
 **There is no node/next path.** `contract-core` is pandera/pandas and the CI gate needs an
 importable Python package. A non-Python repo that needs a contract should move the external read

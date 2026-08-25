@@ -29,9 +29,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: mypy
-      - run: pytest -q
+      # The correctness gate lives in the Makefile so this command and the local one can never
+      # drift — `make check` runs ruff + mypy + pytest. Security scans (bandit below, plus
+      # secret-scan/sca) stay separate jobs.
+      - run: make check
 
   # Item 4 Part A — first-party SAST. Bandit walks the Python AST for vulnerability shapes
   # (shell=True, yaml.load, pickle, weak crypto, ...). It is a SIBLING job; its verdict reaches the

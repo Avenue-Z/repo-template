@@ -12,7 +12,10 @@ const compat = new FlatCompat({ baseDirectory: __dirname });
 
 const eslintConfig = [
   ...compat.extends("next/core-web-vitals", "next/typescript"),
-  { ignores: [".next/", "node_modules/"] },
+  // next-env.d.ts is a Next-generated file (it even says "should not be edited") whose
+  // triple-slash refs trip @typescript-eslint/triple-slash-reference. create-next-app ignores
+  // it for exactly this reason; linting a generated file we cannot edit is enforcement theater.
+  { ignores: [".next/", "node_modules/", "next-env.d.ts"] },
 ];
 
 export default eslintConfig;

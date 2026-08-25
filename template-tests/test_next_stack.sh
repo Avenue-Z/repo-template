@@ -38,15 +38,25 @@ ci_src="$(cat "$CI")"
 assert_nomatch "the ci job is NOT a matrix (a matrix leg is named 'ci (x)', so context 'ci' would never report)" 'strategy:' "$ci_src"
 assert_match   "declares a read-only permissions block" 'contents: *read' "$ci_src"
 
-echo "next stack: CI must actually BUILD, not just typecheck"
+echo "next stack: CI installs deps, then delegates the correctness gate to 'make check'"
+# The correctness steps live in the Makefile (one definition), and ci.yml invokes that same
+# target — so the local `make check` and the CI gate can never drift. ci.yml still owns the
+# install step; the gate itself is `make check`.
+assert_match "runs npm ci"        'npm ci' "$ci_src"
+assert_match "delegates to make check" 'make check' "$ci_src"
+
+echo "next stack: the Makefile 'check' target is the real correctness gate — and must BUILD"
 # A Next app that type-checks clean can still fail `next build` — a bad route export, a
 # server/client boundary violation, a missing build-time env var. Vercel runs this build on every
-# deploy, so CI must run it too; otherwise the first place a broken build surfaces is the deploy.
-assert_match "runs npm ci"        'npm ci' "$ci_src"
-assert_match "runs lint"          'npm run lint' "$ci_src"
-assert_match "runs typecheck"     'npm run typecheck' "$ci_src"
-assert_match "runs the tests"     'npm test' "$ci_src"
-assert_match "runs the BUILD"     'npm run build' "$ci_src"
+# deploy, so the gate must run it too; otherwise the first place a broken build surfaces is the deploy.
+MK=$T/Makefile
+assert_file "Makefile"            "$MK"
+mk_src="$(cat "$MK")"
+assert_match "check target exists"     '^check:' "$mk_src"
+assert_match "runs lint"          'npm run lint' "$mk_src"
+assert_match "runs typecheck"     'npm run typecheck' "$mk_src"
+assert_match "runs the tests"     'npm test' "$mk_src"
+assert_match "runs the BUILD"     'npm run build' "$mk_src"
 
 echo "next stack: package.json wires the scripts CI calls"
 for s in build lint typecheck test; do

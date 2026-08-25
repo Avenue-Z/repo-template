@@ -56,6 +56,44 @@ The whole point of the template: one click plus one script.
 6. **Fill in the skeleton.** Complete the `<!-- TODO -->` markers in `README.md` and `CLAUDE.md`, and
    install the local hook: `pre-commit install`.
 
+**If this repo will read external data — later, not now.**
+
+A repo that reads a vendor API, an MCP tool, a CSV drop or LLM output should declare a data
+contract. This is **not** an init-time step and there is no `init-repo.sh` flag for it, on purpose:
+on the day you create a repo you usually do not yet know whether it reads external data, and the
+scaffolder needs your package to have its real name — not the `app` placeholder the template ships.
+
+When that day comes, from the repo root:
+
+    pip install "contract-core @ git+https://github.com/Avenue-Z/data-contract.git@<tag>"
+    contract init --system <name> --platform <platform> --source <api|mcp|llm|file>
+
+`--platform` takes letters, digits, hyphens and underscores only — `google-ads`, **not**
+`google.ads`. A dot separates segments in a schema ref, so a dotted platform generates refs that
+will not resolve against the tree `init` just wrote. It refuses one rather than writing it.
+
+It writes `contract.yaml`, the schema tree, `boundaries.py`, a drift test and the CI workflow, and
+registers the `raw_drift` pytest marker. It prints — rather than writes — the `contract-core`
+dependency pin; add that line to `pyproject.toml` yourself. No read token is needed:
+`data-contract` is public.
+
+**Python only.** `contract-core` is pandera/pandas and the gate needs an importable Python package.
+There is no node or next path; a non-Python repo that needs a contract should move the external read
+into a Python job that owns it.
+
+**Adopting contracts makes this a 3.13 repo.** `contract-core` declares `requires-python = ">=3.13"`
+while the python stack ships `>=3.11` and a 3.11/3.12/3.13 matrix. Narrow `requires-python`,
+`[tool.ruff] target-version`, `[tool.mypy] python_version`, the `ci.yml` matrix **and the
+`Dockerfile` base image** together — leaving the Dockerfile behind reproduces
+Avenue-Z/data-contract#53.
+
+Expect a red check on the first run. The generated drift test fails by design until you write its
+assertion, and the generated schema fields are `REPLACE_ME_` placeholders until you author them from
+the real export. That red is the remaining work, not a broken scaffold.
+
+Full detail: `Avenue-Z/data-contract` `docs/consuming-repo-setup.md`; the
+`authoring-data-contracts` Claude Code skill carries the authoring workflow.
+
 **Claude Code skills (once per machine, not per repo):**
 
     /plugin marketplace add Avenue-Z/claude-marketplace

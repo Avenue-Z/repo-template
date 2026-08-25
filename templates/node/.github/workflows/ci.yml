@@ -19,6 +19,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
+      # The correctness gate lives in the Makefile so this command and the local one can never
+      # drift — `make check` runs lint + typecheck + test. Security scans (secret-scan/sca) stay
+      # separate jobs.
+      - run: make check

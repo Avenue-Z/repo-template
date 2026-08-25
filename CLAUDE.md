@@ -15,11 +15,14 @@
 <!-- TODO: the 3-6 directories that matter and what each holds -->
 
 ## Commands
+`make check` is the aggregate correctness gate (lint + typecheck + tests, plus `build` on next);
+ci.yml calls the same target, so the **correctness** steps can never drift between laptop and CI.
+(Install is still spelled out in both places — that's inherent to installing deps, not part of the gate.)
+
 | Task | Command |
 |---|---|
 | Install | <!-- TODO --> |
-| Test | <!-- TODO --> |
-| Lint | <!-- TODO --> |
+| Check (mirrors CI) | `make check` |
 | Run | <!-- TODO --> |
 
 ## Env
@@ -34,6 +37,10 @@ Declared in `.env.example`. Copy to `.env.local`. Never commit `.env.local`.
    have not seen.
 4. Never commit credentials. `.gitignore` is a denylist and denylists leak; `secret-scan` is the
    real control.
+5. **Python repos:** if this repo reads external data or emits a deliverable, it needs a data
+   contract. Do not hand-author one — run `contract init` (see `README.md`). `contract lint` and
+   `contract reconcile` are the gate; a boundary starts at `mode: observe` and is promoted only
+   once `contract events` reports it clean.
 
 ## Project rules
 <!-- TODO: the rules specific to THIS repo. Keep them durable. -->

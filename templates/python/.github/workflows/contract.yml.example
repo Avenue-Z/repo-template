@@ -1,0 +1,28 @@
+# This repo has NO data-contract wiring. This file is a signpost, not a workflow — the
+# .example suffix is load-bearing (GitHub parses every .yml under .github/workflows/, and a
+# file with no `on:` trigger reports as a workflow error).
+#
+# If this repo reads external data — a vendor API, an MCP tool, a CSV drop, LLM output — it
+# should have a data contract: one artifact giving you runtime validation (did the vendor
+# change the data under us?) and static reconciliation (did the code drift from the design?).
+#
+# DO NOT hand-write the workflow, and do not copy a version tag into this file. Run:
+#
+#     pip install "contract-core @ git+https://github.com/Avenue-Z/data-contract.git@<tag>"
+#     contract init --system <name> --platform <platform> --source <api|mcp|llm|file>
+#
+# --platform takes letters, digits, hyphens and underscores only. NOT a dotted vendor name:
+# `google-ads`, not `google.ads` — a dot makes the generated schema refs unresolvable.
+#
+# That writes .github/workflows/contract.yml with the correct pinned tag, plus contract.yaml,
+# the schemas, the boundary wiring and a drift test. Delete this file once it has.
+#
+# Read first: Avenue-Z/data-contract docs/consuming-repo-setup.md, and the
+# `authoring-data-contracts` Claude Code skill.
+#
+# PYTHON ONLY. contract-core is pandera/pandas and the gate needs an importable Python
+# package. There is no node/next path — see README.md.
+#
+# NOTE: contract-core requires Python 3.13. This template's stack ships
+# requires-python = ">=3.11" and a 3.11/3.12/3.13 CI matrix; adopting contracts means
+# narrowing both to 3.13. See README.md.

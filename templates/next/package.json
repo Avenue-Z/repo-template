@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "next": "^15.1.0",
+    "next": "^15.5.22",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -27,5 +27,12 @@
     "eslint-config-next": "^15.1.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.0"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.8",
+    "js-yaml": "^4.3.1",
+    "nanoid": "^3.3.18",
+    "postcss": "^8.5.23",
+    "sharp": "^0.35.0"
   }
 }

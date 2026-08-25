@@ -57,7 +57,7 @@ automate it, that is the feeling the design is for.
 
 ## Before you open a PR
 
-- Tests pass.
-- Lint passes (`ruff check` / `npm run lint`).
+- `make check` passes — the correctness gate (lint + typecheck + tests, plus `build` on next).
+  ci.yml runs the same target, so a green `make check` is the same gate the PR faces.
 - No credentials. `secret-scan` will fail the PR; a key that reached the remote is **burned and
   must be rotated**, even if the PR is never merged. See SECURITY.md.

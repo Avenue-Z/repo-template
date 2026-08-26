@@ -34,7 +34,7 @@ jobs:
       - name: check the tools the suite needs
         run: |
           set -euo pipefail
-          for t in jq gh python3 bash; do
+          for t in jq gh python3 bash shellcheck; do
             command -v "$t" >/dev/null || { echo "::error::$t is required by the suite but is not installed"; exit 1; }
             echo "ok: $t"
           done

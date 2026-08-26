@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=template-tests/lib.sh disable=SC1091
 source "${REPO_ROOT}/template-tests/lib.sh"
 
 # Build a throwaway clone so we never mutate the real template.

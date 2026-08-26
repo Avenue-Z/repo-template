@@ -2,7 +2,9 @@
 
 ## Why this exists
 
-The template is **3,663 lines of bash across 23 files** — 8 in `scripts/`, 15 in `template-tests/`.
+The template was **3,663 lines of bash across 23 files** — 8 in `scripts/`, 15 in
+`template-tests/` — when this spec was written, and is 3,772 across 24 with the gate itself
+counted.
 That bash is the machinery that creates every Avenue Z repo: it selects a stack, rewrites branch
 lineage, resolves CODEOWNERS, applies rulesets, and links Vercel. Nothing lints it. Not in CI, not
 in `.pre-commit-config.yaml`.
@@ -11,6 +13,17 @@ It is not unlinted because nobody cares. Twelve of those files carry `# shellche
 directives, and at `-S warning` the entire tree produces **exactly one finding**
 (`template-tests/test_apply_rulesets.sh:60`, SC2034 — `out_yes` assigned and never read). Someone
 is running ShellCheck by hand and acting on it.
+
+**That "exactly one" was the wrong number to design against, in two ways at once**, and the
+post-implementation review caught both. It was measured at `-S warning` on ShellCheck **0.11.0**;
+the gate now runs at `-S info` (see Rejected) and CI runs **0.9.0**, because that is what
+`ubuntu-24.04` ships. Against that real combination the tree carried **four more** findings:
+two `SC2015` (`A && B || C` in the org-plan guards of `apply-rulesets.sh` and
+`apply-org-ruleset.sh`, reported by 0.9.0 and *not* by 0.11.0) and two `SC1091` (the two suites
+that source `lib.sh` through `${REPO_ROOT}` and so never got the house `# shellcheck source=`
+directive — visible only per-file, since a batched run has `lib.sh` among its inputs). All four
+are fixed. The lesson is the spec's own: a number that was never measured under the conditions
+the control actually runs in is an assumption wearing a measurement's clothes.
 
 That is precisely the problem. This repo's stated posture is that no layer practices enforcement
 theater and that "a failure to verify is never treated as a verified pass." An informal discipline
@@ -60,18 +73,27 @@ a vacuous check, which is the failure mode this whole document is about.
 
 Stated plainly, in the template's own idiom:
 
-- **It does not ship into generated repos.** `init-repo.sh` deletes `scripts/` and
-  `template-tests/`, and there are **no `.sh` files anywhere under `templates/`** — the payload is
-  Python and TypeScript. A gate shipped as payload would lint zero files in every repo created from
-  here. This is template-only machinery, exactly like `template-tests.yml` itself.
+- **It does not ship into generated repos — but half of what it lints does.** The original
+  wording here claimed `init-repo.sh` deletes `scripts/`. It does not. `init-repo.sh:359` removes
+  `templates/`, `template-tests/` and `template-docs/` only, and `:358` says so outright —
+  "scripts/ keeps apply-rulesets.sh regardless" — while `test_init_repo.sh:50` and
+  `:55-56` assert `sca-gate.sh`, `bandit-gate.sh` and `ci-aggregate-gate.sh` survive. So **all 8 `scripts/*.sh`
+  ship into every generated repo.** The *gate* is template-only (it lives in `template-tests/`),
+  and that asymmetry is the point worth stating: this repo is the **only** place those 8 payload
+  scripts are ever linted, so a defect that clears this check is copied into every repo built from
+  the template. That raises the stakes on the severity floor rather than lowering them. Extending
+  the gate into generated repos is a separate decision — see Out of scope.
 - **It does not reason across files.** ShellCheck is single-file static analysis. It cannot know
   that `apply-rulesets.sh` sends a malformed ruleset payload, that a `gh api` call queries the wrong
   field, or that a guard fails open. That is what the 14 behavioural suites are for. This gate
   catches the class below that: unquoted expansions, unreachable branches, misused test operators,
   dead assignments.
-- **It does not enforce style.** Severity is `warning`, not `style` or `info` — though not because
-  the stricter tiers would be noisy here. Measured, they report the same single finding. The reason
-  is headroom against future ShellCheck releases; see Rejected.
+- **It does not enforce style.** Severity is `-S info`, not `style`. It is deliberately **not**
+  `warning`: `SC2086` (unquoted expansion — word splitting and globbing) is `info` severity, so
+  `-S warning` does not report it *at all*. `f="$1"; rm -rf $f` passes clean at `warning`. These
+  scripts run `rm -rf` and rewrite branch protection, which makes unquoted expansion the first
+  defect class the gate exists to catch, and `warning` silently exempted it. `info` is the lowest
+  floor that keeps `SC2086` without buying into the `style` tier; see Rejected.
 - **It does not check bash embedded in workflow `run:` blocks.** ShellCheck reads shell files, not
   YAML. Several of this repo's most load-bearing shell lives inline in `sca.yml` and `ci.yml` and
   stays unlinted. Closing that needs `actionlint`, which is a separate decision with its own
@@ -97,8 +119,8 @@ It must **not** be `find . -name '*.sh'`. Measured on a working checkout today:
 
 | | Files |
 |---|---|
-| `git ls-files '*.sh'` — what is actually in the repo | **23** |
-| `find . -name '*.sh'` | **46** |
+| `git ls-files '*.sh'` — what is actually in the repo | **24** |
+| `find . -name '*.sh'` | **47** |
 | …of which `.claude/worktrees/item-4-bandit-sast/` | 22 |
 | …of which `templates/next/node_modules/` | 1 |
 
@@ -118,21 +140,25 @@ satisfied.
 A linter that isn't installed has verified nothing, and reporting green on that basis is the exact
 fail-open pathology `sca.yml` refuses ("refusing to report a clean check").
 
-This needs **two** changes, because the suite has two entry points and the workflow's tool loop only
-covers one of them.
-
-**In CI**, `shellcheck` joins the tool assertion already at the top of `template-tests.yml`:
+This needs **one** change, in the test script itself — not two. The spec originally called for
+`shellcheck` to join the tool assertion at the top of `template-tests.yml` as well; review showed
+that is not merely redundant but **strictly worse**, and it has been dropped:
 
 ```yaml
-for t in jq gh python3 bash; do
+for t in jq gh python3 bash; do          # shellcheck deliberately absent
 ```
 
-ShellCheck is preinstalled on `ubuntu-latest`, but that file's own comment argues the point —
-"assert it rather than assume — a suite that dies on a missing tool reports as a code failure."
+That loop's own stated rationale is "a suite that **dies** on a missing tool reports as a code
+failure." This suite does not die — it reports one honest `FAIL` and returns, so the other 14
+suites still run and still report. Asserting `shellcheck` in the pre-flight loop would abort all
+15 before any of them ran, discarding a guard that is already correct and trading fifteen results
+for one error annotation. The in-script guard is the control; the loop entry was insulation
+against a failure mode that cannot occur here.
 
-**In the test script itself**, `command -v shellcheck` or `fail` + `finish`. That loop is a workflow
-step: a contributor running `bash template-tests/test_shellcheck.sh` never executes it. Without an
-in-script check the failure is not fail-open, it is **fail-misattributed**, which is worse than the
+**In the test script itself**, `command -v shellcheck` or `fail` + `finish`. This is the only
+entry point that matters, and it covers both: the workflow runs the same script a contributor runs
+with `bash template-tests/test_shellcheck.sh`. Without an in-script check the failure is not
+fail-open, it is **fail-misattributed**, which is worse than the
 honest skip this section forbids. Verified — `set -e` is suppressed inside an `if` condition, so a
 `command not found` (127) flows straight into the `else` branch and the loop runs to completion:
 
@@ -195,8 +221,10 @@ tester ever sees the message:
 
 | File | Change |
 |---|---|
-| `template-tests/test_shellcheck.sh` | **New.** In order: `cd "$(dirname "$0")/.."`, source `lib.sh`, `command -v shellcheck` or `fail`+`finish`, `shopt -s nullglob`, glob both dirs, **`fail`+`finish` if the count is zero**, echo `shellcheck --version`, run `shellcheck -S warning` per file reporting `pass`/`fail`, `finish`. |
-| `.github/workflows/template-tests.yml` | Add `shellcheck` to the tool assertion list. **No runner change** — line 64 is `for t in template-tests/test_*.sh`, so the new case is discovered automatically. |
+| `template-tests/test_shellcheck.sh` | **New.** In order: `cd "$(dirname "$0")/.."`, source `lib.sh`, `command -v shellcheck` or `fail`+`finish`, `shopt -s nullglob`, glob both dirs, **`fail`+`finish` if the count is zero**, echo `shellcheck --version`, **assert every tracked SHELL SCRIPT is inside the globs**, run `shellcheck -S info` per file reporting `pass`/`fail`, `finish`. The scope assertion has three vacuous-pass guards of its own: `git ls-files`' **exit status is checked** (outside a checkout, on dubious ownership, or on a locked index it prints nothing and exits 128 — piped into `grep` that reads as "0 tracked, all covered" and the suite prints ALL PASS), the result set must be **non-empty**, and membership is decided by **shebang, not by the `.sh` suffix**, so a tracked extensionless `#!/usr/bin/env bash` script cannot evade both the globs and the guard. |
+| `.github/workflows/template-tests.yml` | **Modify — one step.** The runner loop already globs `template-tests/test_*.sh`, so the case is *discovered* automatically, and `shellcheck` is still deliberately **not** added to the pre-flight tool loop (see the entry-points decision above — asserting it there would abort all 15 suites). But *asserting* and *installing* are different questions, and nothing was doing the latter: the gate rested on `ubuntu-latest` happening to ship the binary. Add a conditional install step — `command -v` short-circuits on today's image, so the normal path is untouched — that **does not fail the job** if the install fails, leaving the missing-linter case to the suite's own honest FAIL. Without it, an image rotation that drops `shellcheck` turns a required check permanently red with no fix available inside this repository. |
+| `scripts/apply-rulesets.sh`, `scripts/apply-org-ruleset.sh` | **Modify.** Rewrite the org-plan `[ -n ] && [ != null ] || die` guards as `if [ -z ] || [ = null ]; then die; fi`. `SC2015`, surfaced only by ShellCheck 0.9.0 at `-S info`. Behaviour is identical by De Morgan, re-verified by driving both scripts with a fake `gh` returning an empty plan. |
+| `template-tests/test_contracts_docs.sh`, `template-tests/test_init_repo.sh` | **Modify.** Add the house `# shellcheck source=template-tests/lib.sh disable=SC1091` directive. Both source through `${REPO_ROOT}` and so never picked it up; `SC1091` fires per-file at `-S info`. |
 | `template-tests/test_apply_rulesets.sh` | **Add the two missing `--yes` assertions** (see above), which is what makes `out_yes` read. Do not delete the variable. |
 
 Per-file reporting rather than one aggregate pass matters for the same reason `test_action_pins.sh`
@@ -246,13 +274,22 @@ like it works.
    the box has verified nothing — which is the exact defect this item exists to catch.
 4. **Multi-failure reporting.** Introduce violations in **two** files at once and confirm both are
    named. One file proves nothing about the `set -e` landmine above.
-5. **Missing ShellCheck, CI path:** run the workflow's tool loop with `shellcheck` renamed out of
-   `PATH`; it must exit non-zero with the `::error::` line.
+5. **Scope tamper-evidence — all four paths.** A gate that silently stops covering new files is
+   the decay this check exists to prevent, and an assertion that passes vacuously is worse than
+   none, so exercise each way it could:
+   a. `git add -N .github/scripts/decoy.sh` — a tracked `.sh` outside the globs. Must be named, red.
+   b. `git add -N scripts/decoy` — a tracked **extensionless** script opening `#!/usr/bin/env bash`,
+      and a second one opening `#!/bin/bash -e` (a shebang carrying an argument). Both must be
+      named, red. Keying on the `.sh` suffix alone lets these through the globs *and* the guard.
+   c. Run the suite from a directory that is **not a git checkout**. It must FAIL with "scope is
+      UNVERIFIED" — not print `ok all 0 tracked ... are covered` and ALL PASS.
+   d. Confirm a zero-result lookup `fail`s **and** `finish`es, like the empty-glob guard: `fail()`
+      only increments a counter, and the next line expands the array.
 6. **Missing ShellCheck, local path:** run `bash template-tests/test_shellcheck.sh` directly with
    `shellcheck` renamed out of `PATH`. It must print one honest "shellcheck is not installed"
-   failure and stop — **not** 23 lines of `FAIL <file>`. Item 5 does not cover this: the tool loop
+   failure and stop — **not** 24 lines of `FAIL <file>`. Item 5 does not cover this: the tool loop
    is a workflow step and never executes on this path.
-7. **Wrong-cwd sanity:** `cd template-tests && bash test_shellcheck.sh` must still lint all 23
+7. **Wrong-cwd sanity:** `cd template-tests && bash test_shellcheck.sh` must still lint all 24
    files, by virtue of the `cd`.
 
 ## Rejected
@@ -261,15 +298,26 @@ like it works.
   hooks are "SKIPPABLE with `git commit --no-verify` — the CI job is the real gate," and adding one
   makes ShellCheck a local install requirement for contributors. The CI case is the control; the
   hook would only be convenience. Cheap to add later if the feedback loop proves annoying.
-- **`-S style` / `-S info`.** Not for noise: measured, `style` and `info` report **the same single
-  SC2034** and nothing else, so there is no churn to avoid. The argument is *headroom* — severity is
-  the contract with future ShellCheck releases, and `style` is the tier where new opinions get
-  added, so pinning there invites an unrelated PR to go red on an upgrade that changed no code here.
+- **`-S warning` (originally chosen; rejected on review).** The headroom argument below is real,
+  but it bought insulation with the gate's own purpose. `SC2086` is `info` severity, so `-S warning`
+  does not report unquoted expansion **at all** — demonstrated on a scratch file: `f="$1"; rm -rf $f`
+  is reported at `-S style` and `-S info`, and vanishes at `warning`. A gate over scripts that run
+  `rm -rf` and rewrite branch protection cannot exempt the defect class it was written to catch.
+  Severity is now `-S info`.
+- **`-S style`.** Still rejected, now for the original reason correctly scoped: `style` is the tier
+  where new opinions get added between releases, so pinning there invites an unrelated PR to go red
+  on an upgrade that changed no code here. `info` gets `SC2086` without that exposure. Measured on
+  both versions in play — 0.9.0 and 0.11.0 — the tree is clean at `style` too, so this is a
+  forward-looking choice, not a reaction to present noise.
 - **`-x` / `--external-sources`.** Dropped after measuring, rather than carried as a harmless
   default. It resolves `# shellcheck source=` directives, and all **12 of 12** in this repo carry
-  `disable=SC1091` — they explicitly suppress the only diagnostic it produces. SC1091 is `note`
-  severity anyway, below the `-S warning` floor: verified by pointing a scratch file at a missing
-  source, which reports at `-S info` and vanishes at `-S warning`. And the flag that pulls
+  `disable=SC1091` — they explicitly suppress the only diagnostic it produces. (The original text
+  added "and SC1091 is `note` severity, below the `-S warning` floor anyway." That second reason
+  **died with the move to `-S info`**, where SC1091 is squarely in scope — and review was right that
+  it was a non-sequitur even before then, since SC1091's severity says nothing about what `-x` buys.
+  The directives now do the whole job, which is exactly why the two files that lacked them went red
+  and had to be fixed. Note `-x` would **not** have saved them: without a `source=` directive
+  ShellCheck cannot resolve a `${REPO_ROOT}`-interpolated path either.) And the flag that pulls
   *warnings* out of sourced files is `-a`/`--check-sourced`, not `-x`. So `-x` is a no-op today and
   stays one under those directives tomorrow. `-a` is not wanted either: `lib.sh` is itself in the
   glob and linted directly, so following it from each caller would re-report the same findings once
@@ -299,6 +347,15 @@ like it works.
 - Linting the templates' `Makefile`s or `Dockerfile`.
 - Any change to the 14 existing suites beyond the two `--yes` assertions in
   `test_apply_rulesets.sh`.
-- **Pinning the ShellCheck version.** Accepted as a consequence of using the runner's binary; see
-  Rejected. If a release ever does turn an unrelated PR red, revisit with the version line already
-  in the output.
+- **Pinning the ShellCheck version.** Still accepted as a consequence of using the runner's binary,
+  but the risk is no longer hypothetical and this is now the weakest part of the design. Measured:
+  `ubuntu-24.04` ships **0.9.0**, and 0.9.0 and 0.11.0 **disagree on this very tree** — 0.9.0
+  reports two `SC2015` findings that 0.11.0 does not. Both are fixed, so the gate is green on both
+  today, but a required check whose verdict depends on an unpinned binary is precisely what this
+  repo SHA-pins every action to avoid. The version line in the output is the mitigation; a
+  checksum-pinned download (the `gitleaks` / `osv-scanner` idiom already used here) is the fix, and
+  is deferred to its own change rather than smuggled into this one.
+- **Extending the gate into generated repos.** All 8 `scripts/*.sh` ship as payload but the gate
+  does not go with them, so a generated repo never lints its own copies. Closing that means
+  deciding what a generated repo's `ci` check should own — a larger question than this spec.
+  Recorded here so it is a known gap rather than an unexamined one.

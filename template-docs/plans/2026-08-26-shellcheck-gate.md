@@ -2,16 +2,33 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **STATUS: EXECUTED, THEN AMENDED ON REVIEW.** Both tasks below landed as written. A
+> post-implementation review then found five defects in what the gate was *aimed at* (not in how it
+> was built), and the shipped code now differs from the step bodies below. **The Global Constraints
+> immediately following are current and authoritative; the numbered step bodies are the historical
+> record of the original execution and are superseded where they conflict.** The embedded commit
+> messages in Steps 7 and 10 are reproduced verbatim from git and are deliberately not rewritten —
+> two of their claims (`-S warning` "measured identical", SC1091 "below the warning floor") were
+> corrected by the review. See `template-docs/reviews/2026-08-26-review-shellcheck-gate-impl.md`
+> for the findings and their resolutions, and the design spec for the current rationale.
+
 **Goal:** Lint the template's own ~3,600 lines of bash on every PR, as a case inside the existing
 `template-tests` suite, so a discipline currently living in one maintainer's habits becomes a control.
 
 **Architecture:** One new suite case (`template-tests/test_shellcheck.sh`) discovered automatically by
-the runner loop already in `template-tests.yml`, plus one line added to that workflow's tool
-assertion. No new workflow, no new status-check context. Task 1 closes a real coverage gap the linter
+the runner loop already in `template-tests.yml`, plus one step in that workflow. No new workflow,
+no new status-check context. **That workflow change is not what this plan originally described.** It
+was "one line added to the tool assertion"; review removed that line (asserting there aborts all 15
+suites before any runs) and then added a *conditional install* step instead, which is a different
+thing — see Global Constraints below. Task 1 closes a real coverage gap the linter
 exposes; Task 2 turns the linter on. **The order is load-bearing** — see below.
 
-**Tech Stack:** bash, ShellCheck 0.11.0 (preinstalled on `ubuntu-latest`, unpinned by decision),
-the suite's own `template-tests/lib.sh` assertions.
+**Tech Stack:** bash, ShellCheck (preinstalled on the runner image, unpinned by decision), the
+suite's own `template-tests/lib.sh` assertions. **Version matters and was originally misstated
+here as "0.11.0 (preinstalled on `ubuntu-latest`)".** 0.11.0 was the *local* version every
+"measured" claim in this plan was produced with; `ubuntu-24.04` ships **0.9.0**, and the two
+disagree on this tree. Verify against 0.9.0, not your laptop, before trusting a measurement — the
+suite prints the version it actually used for exactly this reason.
 
 **Spec:** `template-docs/specs/2026-08-25-shellcheck-gate-design.md` — read it first. Its "What this
 gate does NOT do" and "Three implementation landmines" sections are the reason this plan looks the
@@ -20,15 +37,28 @@ records two rounds of defects that specifying it casually produced.
 
 ## Global Constraints
 
-- **Severity is `-S warning`.** Not `style`, not `info`. Measured: all three report the same single
-  finding today; `warning` is chosen for headroom against future ShellCheck releases.
-- **No `-x` / `--external-sources`.** Dropped after measurement — all 12 `# shellcheck source=`
-  directives carry `disable=SC1091`, and SC1091 is `note` severity, below the `warning` floor.
+- **Severity is `-S info`.** Not `warning`, not `style`. `-S warning` does **not** report `SC2086`
+  (unquoted expansion) at all — it is `info` severity — which exempted the first defect class this
+  gate exists to catch, in scripts that run `rm -rf`. `info` is the lowest floor that keeps
+  `SC2086` without the `style` tier. (Originally `-S warning`, on a "measured identical, chosen for
+  headroom" argument that was measured only at 0.11.0 and only at `warning`.)
+- **No `-x` / `--external-sources`.** Dropped after measurement — the `# shellcheck source=`
+  directives carry `disable=SC1091` and suppress the only diagnostic it produces. (The original
+  second clause, "and SC1091 is `note` severity, below the `warning` floor," no longer holds at
+  `-S info` and was a non-sequitur regardless.) **Every file that sources `lib.sh` must carry the
+  directive** — two did not, because they source through `${REPO_ROOT}`, and `-x` cannot resolve an
+  interpolated path either.
 - **Scope is explicit globs:** `scripts/*.sh` and `template-tests/*.sh`. **Never** `find . -name
-  '*.sh'` — that returns 46 files against 23 tracked (22 in the gitignored `.claude/worktrees/`, one
-  in `templates/next/node_modules/`).
-- **Template-only.** Nothing in this plan may ship into a generated repo. `init-repo.sh` already
-  deletes `scripts/` and `template-tests/`; do not add anything under `templates/`.
+  '*.sh'` — that returns 47 files against 24 tracked (22 in the gitignored `.claude/worktrees/`, one
+  in `templates/next/node_modules/`). **The counts here are the SHIPPED ones (47/24), measured on
+  disk and in the index after `test_shellcheck.sh` landed.** The 46/23 in the step bodies below was
+  correct when the plan was written, one file earlier, and is left as part of that record.
+- **The GATE is template-only; half of what it LINTS is not.** `init-repo.sh:359` deletes
+  `templates/`, `template-tests/` and `template-docs/` **only** — `scripts/` survives by design
+  (`:358`: "scripts/ keeps apply-rulesets.sh regardless"), so all 8 `scripts/*.sh` ship into every
+  generated repo. This plan originally asserted `init-repo.sh` deletes `scripts/`; it does not.
+  Nothing here may ship, so do not add anything under `templates/` — but understand that this repo
+  is the **only** place those 8 payload scripts are ever linted.
 - **Branch flow:** work on a `feat/*` or `chore/*` branch off `dev`. Never push to `main`.
   `CONTRIBUTING.md` is canonical.
 - **Verify, don't infer.** Every "Expected:" block below was produced by actually running the
@@ -42,7 +72,7 @@ records two rounds of defects that specifying it casually produced.
 |---|---|
 | `template-tests/test_shellcheck.sh` | **Create.** The gate. Self-contained: guards its own preconditions, selects files, lints, reports per file. |
 | `template-tests/test_apply_rulesets.sh` | **Modify** (after line 64). Add the two `--yes` assertions that the SC2034 is pointing at. |
-| `.github/workflows/template-tests.yml` | **Modify** line 37. Add `shellcheck` to the tool assertion list. No runner change — line 64 already globs `template-tests/test_*.sh`. |
+| `.github/workflows/template-tests.yml` | **Modify — one step, and NOT the one written here originally.** ~~Add `shellcheck` to the tool assertion list.~~ Reversed on review: asserting it there aborts all 15 suites, where the suite's own guard reports one honest FAIL and lets the other 14 run. What ships instead is a **conditional install** step — `command -v` short-circuits on today's image, and it does not fail the job if the install fails. Asserting and installing are different questions and only the first was ever considered. No runner change either way; the runner loop already globs `template-tests/test_*.sh`. |
 
 **Why Task 1 must land before Task 2:** the tree is not currently clean. `shellcheck -S warning`
 reports one finding, so if the gate arrives first it goes red immediately on a defect that is not
@@ -172,7 +202,11 @@ anything'; all 14 suites PASS; shellcheck -S warning over scripts/ and template-
 
 - [ ] **Step 1: Create `template-tests/test_shellcheck.sh`**
 
-This exact content was run during planning; every guard in it was exercised (Steps 4–8):
+**SUPERSEDED — do not copy this block.** It is the content as originally executed; every guard in
+it was exercised (Steps 4–8) and all of them still stand. But the shipped file differs: severity is
+now `-S info`, a tracked-`.sh` scope assertion was added, and the `NOT payload` comment below is
+**factually wrong** (`init-repo.sh` does not delete `scripts/`). Read
+`template-tests/test_shellcheck.sh` for the current version.
 
 ```bash
 #!/usr/bin/env bash

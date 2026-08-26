@@ -62,6 +62,8 @@ if out_yes=$(./scripts/apply-rulesets.sh --yes --dry-run 2>&1); then
 else
   pass "--yes is refused by apply-rulesets.sh"
 fi
+assert_match   "explains there is no --yes to reach for" 'no --yes on this script' "$out_yes"
+assert_nomatch "does not apply anything" 'created new ruleset|updated existing ruleset' "$out_yes"
 
 # The script must not even CONTAIN the org-apply code any more. A flag guard that sits in front of
 # a still-present POST to orgs/<org>/rulesets is one edit away from being reachable again.

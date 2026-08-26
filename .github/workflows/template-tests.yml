@@ -55,10 +55,16 @@ jobs:
       # On today's image `command -v` short-circuits and nothing is installed, so the normal path is
       # untouched; the fallback runs only in the case that is otherwise unfixable.
       #
-      # It deliberately does NOT `exit 1`, and deliberately omits `set -e`. If the install cannot
-      # succeed, the missing-linter case belongs to test_shellcheck.sh's own guard, which reports one
-      # honest FAIL and lets the other 14 suites run. Failing the job here would recreate precisely
-      # the all-15-suites-dark diagnostics the tool loop above exists to avoid.
+      # This step MUST NOT be able to fail the job. If the install cannot succeed, the missing-linter
+      # case belongs to test_shellcheck.sh's own guard, which reports one honest FAIL and lets the
+      # other 14 suites run; failing here would recreate precisely the all-15-suites-dark diagnostics
+      # the tool loop above exists to avoid.
+      #
+      # What guarantees that is NOT the absence of `set -e` — GitHub invokes every `run:` block as
+      # `bash -e {0}` (confirmed in the run log), so `-e` is on whether this asks for it or not. It is
+      # that every command which can fail sits in an `if` CONDITION, where `-e` is suppressed, and
+      # both branches end in an `echo`. So do not "simplify" the inner `if` into a bare
+      # `sudo apt-get install -y shellcheck` line, or a failed install WILL fail the job.
       - name: make sure shellcheck exists (test_shellcheck.sh lints with it)
         run: |
           set -uo pipefail

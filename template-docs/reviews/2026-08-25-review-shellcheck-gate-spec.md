@@ -24,8 +24,9 @@ delete the evidence — the baseline mechanism it rejects two sections later, ch
 harder to notice.
 
 **Resolved:** new section "The single existing finding is a missing assertion, not dead code";
-wiring row inverted to *add* the two assertions; cost claim in "Why this exists" corrected, with the
-earlier wording named so the correction is legible.
+wiring row inverted to *add* the two assertions; cost claim in "Why this exists" corrected.
+(Round one also left the earlier wording quoted in the spec for legibility; round-two finding E
+removed that — see below.)
 
 Assertion strings were taken from running the script, not invented. Note the regex differs from line
 57's: that guards the *org* apply's messages, while `apply-rulesets.sh:149,153` log
@@ -72,9 +73,10 @@ One finding. The same one. Clean at `style`, at `info`, and with `-x`. There was
 future ShellCheck releases add opinions, and pinning there invites an unrelated PR to go red on an
 upgrade that changed no code here.
 
-**Resolved:** claim deleted, real argument stated, and the retraction left visible in the Rejected
-entry so nobody re-derives the fabricated version. The boundaries bullet that carried the same
-framing ("litigates formatting preferences across 3,663 lines") was corrected to match.
+**Resolved:** claim deleted and the real argument stated. The boundaries bullet that carried the
+same framing ("litigates formatting preferences across 3,663 lines") was corrected to match.
+(Round one kept the retraction visible in the Rejected entry; round-two finding E moved that history
+here — see below.)
 
 ## 4. The supply-chain argument was self-contradictory
 
@@ -110,8 +112,10 @@ The spec cited the twelve `# shellcheck source=` directives as evidence of manua
 specified an invocation that ignores them: they do nothing without `-x`. Measured, `-x` and plain
 output are byte-identical today.
 
-**Resolved:** `-x` chosen explicitly, with the measurement and the reason — so the directives are
-load-bearing the next time someone adds a `source` line, rather than cargo.
+**Resolved at the time** by choosing `-x` explicitly. **Superseded by round-two finding D:** that
+rationale was itself unmeasured and wrong — all 12 directives carry `disable=SC1091`, SC1091 is
+below the `-S warning` floor, and the flag for sourced-file warnings is `-a`, not `-x`. The flag is
+now dropped.
 
 ## 7. Minor — the red-green test contradicted the glob decision
 
@@ -134,3 +138,100 @@ reverting.
   `node_modules`. The measured table is now in the spec.
 - Every opening statistic (3,663 lines, 23 files, 8 + 15, 12 `source=` directives, exactly one
   SC2034, zero `.sh` under `templates/`) re-verified exact.
+
+---
+
+# Round two — review of the revised spec
+
+Round one's seven findings all confirmed closed by the reviewer. The revision then introduced three
+new defects, plus one unmeasured rationale and one editorial problem. Same verification discipline:
+every claim below was reproduced before the spec was touched, and all five held.
+
+The pattern is worth naming because it repeated: **the spec kept writing checks its own standard had
+to cash.** Round one's fabricated "churn" claim was replaced by a fresh unmeasured claim about `-x`
+in a brand-new section. Measuring the alternative you reject is not a step you get to skip in a
+document whose thesis is that unverified controls lapse.
+
+## A. Blocking — the empty-glob guard died on `set -u` before it could report
+
+`fail()` increments a counter; it does not exit. The Wiring row said "asserts the count is non-zero"
+and never said the guard *stops*, so control reached the array expansion.
+
+Under bash 3.2 — `/bin/bash` on every macOS machine, including the one a maintainer would verify
+from — expanding an empty array under `set -u` is fatal. Reproduced on
+`GNU bash, version 3.2.57(1)-release (arm64-apple-darwin24)`:
+
+    count=0
+    /bin/bash: line 1: f[@]: unbound variable
+
+Fixed in bash 4.4, and `ubuntu-latest` runs 5.x, so **CI would never have shown it.** That inverts
+the failure `template-tests.yml:42-46` already records ("It passed on my machine only because my git
+happened to be configured"): green in CI, crash on the laptop.
+
+The self-defeating part: testing item 3 existed to catch exactly this class, and as written it would
+have died with `unbound variable` before reaching the message the tester was told to assert on.
+
+**Resolved:** the Decision now requires `fail "…"; finish`, the Wiring row spells out the ordering,
+and testing item 3 names both failure modes and requires running under `/bin/bash` *and* a 5.x bash
+so `unbound variable` is not misread as the guard firing. Also recorded: zero-arg ShellCheck exits
+**3** with a usage dump, not 1 — so even on modern bash the fall-through buried the message.
+
+## B. Blocking — "a missing ShellCheck fails the run" was true only in CI
+
+The Decision was implemented solely by adding `shellcheck` to the tool loop in
+`template-tests.yml` — a workflow step. `bash template-tests/test_shellcheck.sh` never runs it.
+
+And `set -e` is suppressed inside an `if` condition, so 127 flows into the `else` branch. Verified:
+
+      FAIL fileA
+      FAIL fileB
+      FAIL fileC
+    loop completed, set -e did not fire
+
+A contributor without ShellCheck installed would get 23 lines of `FAIL <file>` and conclude their
+bash was broken. Not fail-open — **fail-misattributed**, which costs more diagnostic time than the
+honest skip the section forbids.
+
+**Resolved:** the Decision is retitled "in BOTH entry points" and requires `command -v shellcheck` →
+`fail` + `finish` inside the script; testing item 6 covers the local path, item 5 the CI path.
+
+## C. Blocking — Wiring omitted the mandatory `cd`
+
+For a design whose entire file-selection mechanism is *relative* globs, cwd is the precondition, not
+an implementation detail. Without it the globs resolve against the caller's directory; combined with
+A, `cd template-tests && bash test_shellcheck.sh` crashed with `unbound variable` rather than
+reporting anything.
+
+One correction to the review: the suites are **not** all identical. Eleven open with
+`cd "$(dirname "$0")/.."` and source relatively; `test_init_repo.sh`, `test_link_vercel.sh`, and
+`test_contracts_docs.sh` use `REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"` and source absolutely,
+because they `cd` elsewhere later. The new case must use the **first** idiom.
+
+**Resolved:** `cd` is first in the Wiring row, landmine 3 explains why the choice between the two
+idioms is forced, and testing item 7 checks it from a wrong cwd.
+
+## D. The `-x` rationale was invented — flag dropped
+
+The claim was that `-x` keeps the twelve `# shellcheck source=` directives load-bearing. Three
+independent refutations, one command each:
+
+- **12 of 12** directives carry `disable=SC1091` — they suppress the only diagnostic `-x` resolves.
+- SC1091 is `note` severity, below the `-S warning` floor. Verified against a scratch file pointing
+  at a missing source: it reports at `-S info` and vanishes at `-S warning`.
+- The flag that pulls *warnings* out of sourced files is `-a`/`--check-sourced`. `shellcheck --help`:
+  `-x --external-sources  Allow 'source' outside of FILES`.
+
+So `-x` was a no-op today and would stay one tomorrow.
+
+**Resolved:** flag **dropped** rather than kept as a harmless default — carrying config whose only
+defence is "it does nothing" is the cargo this spec complains about. The Rejected entry records all
+three measurements, plus why `-a` is not wanted either: `lib.sh` is itself in the glob and linted
+directly, so following it from each caller would re-report identical findings once per sourcing file.
+
+## E. Editorial — draft archaeology stripped
+
+Two sections narrated what an earlier draft had said. A design doc records the decision and its
+evidence; the history belongs in this log.
+
+**Resolved:** both retractions removed from the spec, measurements kept. This file is now the only
+place round one's corrections are narrated.

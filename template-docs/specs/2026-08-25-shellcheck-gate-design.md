@@ -19,8 +19,6 @@ exactly as long as the person who remembers it. The gate is not being added beca
 dirty; it is being added because the code is clean and nothing holds it there.
 
 Adoption cost is **writing the two assertions the SC2034 is pointing at** — see the next section.
-An earlier draft of this spec called it "one line of deleted dead code," which was wrong on both
-counts.
 
 ## The single existing finding is a missing assertion, not dead code
 
@@ -114,13 +112,16 @@ repository: the gate would go red over a months-old duplicate of this suite, or 
 dependency. Both are unfixable-by-design, which makes the gate something to be disabled rather than
 satisfied.
 
-## Decision: a missing ShellCheck fails the run, never skips it
+## Decision: a missing ShellCheck fails the run, never skips it — in BOTH entry points
 
 `lib.sh` states it directly: "A skipped check is NOT a passed check, and must never read like one."
 A linter that isn't installed has verified nothing, and reporting green on that basis is the exact
 fail-open pathology `sca.yml` refuses ("refusing to report a clean check").
 
-So `shellcheck` joins the tool assertion already at the top of `template-tests.yml`:
+This needs **two** changes, because the suite has two entry points and the workflow's tool loop only
+covers one of them.
+
+**In CI**, `shellcheck` joins the tool assertion already at the top of `template-tests.yml`:
 
 ```yaml
 for t in jq gh python3 bash; do
@@ -128,6 +129,22 @@ for t in jq gh python3 bash; do
 
 ShellCheck is preinstalled on `ubuntu-latest`, but that file's own comment argues the point —
 "assert it rather than assume — a suite that dies on a missing tool reports as a code failure."
+
+**In the test script itself**, `command -v shellcheck` or `fail` + `finish`. That loop is a workflow
+step: a contributor running `bash template-tests/test_shellcheck.sh` never executes it. Without an
+in-script check the failure is not fail-open, it is **fail-misattributed**, which is worse than the
+honest skip this section forbids. Verified — `set -e` is suppressed inside an `if` condition, so a
+`command not found` (127) flows straight into the `else` branch and the loop runs to completion:
+
+```
+  FAIL fileA
+  FAIL fileB
+  FAIL fileC
+loop completed, set -e did not fire
+```
+
+A contributor without ShellCheck installed sees 23 lines of `FAIL <file>` and concludes their bash
+is broken. The Decision is only true where this document claims it if both halves exist.
 
 ## Decision: the file list must be non-empty — and the guard needs `nullglob` to work at all
 
@@ -153,14 +170,32 @@ So the implementation **must** `shopt -s nullglob` before building the array, th
 it, this named Decision is decoration: a guard against vacuous checks that is itself vacuous, in the
 one document arguing that unverified controls are the problem.
 
-(Note for anyone reproducing the measurement interactively: zsh errors on an unmatched glob rather
-than passing it through, so this must be checked under `bash`, which is what the suite and CI run.)
+**And the guard must stop the script — `fail "…"; finish` — not report and fall through.** `fail()`
+only increments a counter; it does not exit. Falling through hits two separate failures before the
+tester ever sees the message:
+
+1. **`set -u` + an empty array is fatal on bash 3.2**, which is `/bin/bash` on every macOS machine —
+   including the one a maintainer would verify this from. Expanding `"${files[@]}"` when the array
+   is empty raises `unbound variable`. Measured on `GNU bash, version 3.2.57(1)-release`:
+
+   ```
+   count=0
+   /bin/bash: line 1: f[@]: unbound variable
+   ```
+
+   Fixed in bash 4.4; `ubuntu-latest` runs 5.x, so **CI would never show this.** That is the same
+   failure class `template-tests.yml:42-46` already records — "It passed on my machine only because
+   my git happened to be configured" — running in the opposite direction: green in CI, crash on the
+   laptop.
+2. **Zero-arg ShellCheck exits 3 with a full usage dump**, not 1 — so even on modern bash the
+   fall-through produces a wall of help text rather than the sentence the tester was told to look
+   for.
 
 ## Wiring
 
 | File | Change |
 |---|---|
-| `template-tests/test_shellcheck.sh` | **New.** Sources `lib.sh`, sets `nullglob`, globs both dirs, asserts the count is non-zero, echoes `shellcheck --version`, runs `shellcheck -x -S warning`, reports one `pass`/`fail` per file, ends with `finish`. |
+| `template-tests/test_shellcheck.sh` | **New.** In order: `cd "$(dirname "$0")/.."`, source `lib.sh`, `command -v shellcheck` or `fail`+`finish`, `shopt -s nullglob`, glob both dirs, **`fail`+`finish` if the count is zero**, echo `shellcheck --version`, run `shellcheck -S warning` per file reporting `pass`/`fail`, `finish`. |
 | `.github/workflows/template-tests.yml` | Add `shellcheck` to the tool assertion list. **No runner change** — line 64 is `for t in template-tests/test_*.sh`, so the new case is discovered automatically. |
 | `template-tests/test_apply_rulesets.sh` | **Add the two missing `--yes` assertions** (see above), which is what makes `out_yes` read. Do not delete the variable. |
 
@@ -180,11 +215,17 @@ like it works.
    only shellcheck failed" opacity that per-file reporting exists to prevent. Use the house idiom —
    `assert_ok`, or an explicit `if …; then pass; else fail; fi`. Note `lib.sh:36-37` already documents
    why `cmd && pass || fail` is *not* if-then-else here (SC2015); do not reach for it.
-2. **`nullglob`**, per the Decision above.
-3. **`-x` is a deliberate choice, not a default.** Twelve files carry `# shellcheck source=`
-   directives, and those do nothing unless ShellCheck is invoked with `-x`. Measured today, `-x` and
-   plain produce byte-identical output — so this changes nothing now, and is chosen so the existing
-   directives are load-bearing rather than cargo the next time someone adds a `source` line.
+2. **`nullglob`, and a guard that exits rather than falls through** — per the Decision above. Both
+   halves, or the guard crashes on bash 3.2 before it can report.
+3. **The `cd` is a precondition, not boilerplate.** The suite has two cwd idioms: eleven cases open
+   with `cd "$(dirname "$0")/.."` and source relatively; `test_init_repo.sh`,
+   `test_link_vercel.sh`, and `test_contracts_docs.sh` instead set
+   `REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"` and source absolutely, because they `cd`
+   elsewhere later. **This case must use the first idiom**, and it is not optional: the entire
+   file-selection mechanism is *relative* globs, so without the `cd` they resolve against the
+   caller's directory. Combined with landmine 2, `cd template-tests && bash test_shellcheck.sh`
+   would match nothing and — unguarded, on bash 3.2 — die with `unbound variable` instead of
+   reporting anything at all.
 
 ## Testing
 
@@ -197,13 +238,22 @@ like it works.
    do not infer it.
 3. **Empty-glob guard — assert the message, not the exit code.** Point the globs at an empty
    directory and confirm the case fails *with the "nothing to lint" message*. Checking only that it
-   went red is what lets the `nullglob` bug through: the unfixed version also exits non-zero, via
-   `openBinaryFile: does not exist`. Same distinction `lib.sh:18-25` draws about org access — an
-   exit code is not an answer.
+   went red is what lets the bug through: an unguarded version also exits non-zero — with
+   `unbound variable` on bash 3.2, or ShellCheck's exit-3 usage dump on 5.x. Same distinction
+   `lib.sh:18-25` draws about org access: an exit code is not an answer.
+   **Run this under `/bin/bash` on macOS as well as under a 5.x bash.** The two failure modes differ
+   by version, and a tester who sees `unbound variable`, reads it as "the guard fired," and ticks
+   the box has verified nothing — which is the exact defect this item exists to catch.
 4. **Multi-failure reporting.** Introduce violations in **two** files at once and confirm both are
    named. One file proves nothing about the `set -e` landmine above.
-5. **Tool assertion:** confirmed by running the workflow's tool loop with `shellcheck` renamed out
-   of `PATH`; it must exit non-zero with the `::error::` line.
+5. **Missing ShellCheck, CI path:** run the workflow's tool loop with `shellcheck` renamed out of
+   `PATH`; it must exit non-zero with the `::error::` line.
+6. **Missing ShellCheck, local path:** run `bash template-tests/test_shellcheck.sh` directly with
+   `shellcheck` renamed out of `PATH`. It must print one honest "shellcheck is not installed"
+   failure and stop — **not** 23 lines of `FAIL <file>`. Item 5 does not cover this: the tool loop
+   is a workflow step and never executes on this path.
+7. **Wrong-cwd sanity:** `cd template-tests && bash test_shellcheck.sh` must still lint all 23
+   files, by virtue of the `cd`.
 
 ## Rejected
 
@@ -211,13 +261,19 @@ like it works.
   hooks are "SKIPPABLE with `git commit --no-verify` — the CI job is the real gate," and adding one
   makes ShellCheck a local install requirement for contributors. The CI case is the control; the
   hook would only be convenience. Cheap to add later if the feedback loop proves annoying.
-- **`-S style` / `-S info` (chosen against, but not for the reason you might assume).** An earlier
-  draft claimed these would "churn the tree." That was fabricated, and measuring it takes one
-  command: at `style` and at `info` the tree produces **the same single SC2034** and nothing else.
-  There is no churn to avoid. The real argument for sitting at `warning` is *headroom*: severity is
+- **`-S style` / `-S info`.** Not for noise: measured, `style` and `info` report **the same single
+  SC2034** and nothing else, so there is no churn to avoid. The argument is *headroom* — severity is
   the contract with future ShellCheck releases, and `style` is the tier where new opinions get
   added, so pinning there invites an unrelated PR to go red on an upgrade that changed no code here.
-  A spec that opens by measuring the tree does not get to skip measuring the alternative it rejects.
+- **`-x` / `--external-sources`.** Dropped after measuring, rather than carried as a harmless
+  default. It resolves `# shellcheck source=` directives, and all **12 of 12** in this repo carry
+  `disable=SC1091` — they explicitly suppress the only diagnostic it produces. SC1091 is `note`
+  severity anyway, below the `-S warning` floor: verified by pointing a scratch file at a missing
+  source, which reports at `-S info` and vanishes at `-S warning`. And the flag that pulls
+  *warnings* out of sourced files is `-a`/`--check-sourced`, not `-x`. So `-x` is a no-op today and
+  stays one under those directives tomorrow. `-a` is not wanted either: `lib.sh` is itself in the
+  glob and linted directly, so following it from each caller would re-report the same findings once
+  per sourcing file.
 - **A third-party ShellCheck action** (`ludeeus/action-shellcheck` and similar) — with the tradeoff
   stated honestly, because the obvious argument is self-contradictory. Rejecting the action for
   needing SHA-pinning and lockstep maintenance, in favour of a runner binary that is *unpinned,

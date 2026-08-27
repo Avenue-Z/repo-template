@@ -10,18 +10,19 @@
   most tooling) takes the **production** branch from the repository default, so a repo defaulting
   to `dev` would deploy every merged PR straight to production. The cost is that a PR opened in the
   GitHub UI targets `main` — **change the base to `dev`** with the dropdown next to the title, or
-  use `gh pr create --base dev`. If you forget, `guard-base-branch` fails the PR loudly; it re-runs
+  use `gh pr create --base dev`. If you forget, the `checks` job fails the PR loudly; it re-runs
   when you change the base.
 - **`staging`** — pre-prod soak / QA. Receives PRs from `dev` only.
 - **`main`** — production. Receives PRs from `staging` only.
 
-`guard-base-branch` fails any PR whose base is wrong for its head, and **fails closed on an
+The base-branch guard — the first step of the `checks` job — fails any PR whose base is wrong
+for its head, and **fails closed on an
 unrecognized branch prefix**. Need a new prefix? Add it to the `case` statement in
 `scripts/check-base-branch.sh` (and to the matrix above) in a PR.
 
 The guard reads its decision script from the **base** branch, so a PR cannot rewrite the rule it
 is being judged against. It cannot, however, defend against a PR that edits
-`.github/workflows/guard-base-branch.yml` itself — Actions runs the workflow file from the PR's
+`.github/workflows/checks.yml` itself — Actions runs the workflow file from the PR's
 head, and **nothing in this repo's configuration forces anyone to review that.** `CODEOWNERS`
 routes such a PR to a reviewer; it does not require their approval. Review any PR touching
 `.github/` by convention, and read `SECURITY.md` before assuming you are protected from one.
@@ -59,5 +60,6 @@ automate it, that is the feeling the design is for.
 
 - `make check` passes — the correctness gate (lint + typecheck + tests, plus `build` on next).
   ci.yml runs the same target, so a green `make check` is the same gate the PR faces.
-- No credentials. `secret-scan` will fail the PR; a key that reached the remote is **burned and
+- No credentials. The `secret-scan` step of `checks` will fail the PR; a key that reached the
+  remote is **burned and
   must be rotated**, even if the PR is never merged. See SECURITY.md.

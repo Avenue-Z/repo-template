@@ -79,7 +79,7 @@ fi
 # ---------------------------------------------------------------------------------------
 # THE ORG RULESET MUST NOT REQUIRE STATUS CHECKS. It targets repository_name ~ALL — every
 # repo in Avenue-Z, ~64 of them, of which none was generated from this template and none has
-# guard-base-branch.yml or secret-scan.yml. A required check that never reports does not fail
+# checks.yml. A required check that never reports does not fail
 # a PR; it hangs it PENDING FOREVER. With enforcement:active and bypass_actors:[], one
 # `apply-org-ruleset.sh` would take push AND merge away from every repo in the org at once.
 #
@@ -97,8 +97,19 @@ fi
 
 echo "rulesets: required status check contexts match real workflow job keys"
 contexts=$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' "$REPO_RULESET" | sort)
-expected=$(printf 'guard-base-branch\nsca\nsecret-scan')
-assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {guard-base-branch, sca, secret-scan}"
+# ONE context, not three. guard-base-branch, secret-scan and sca used to be three workflows,
+# three jobs and three required contexts; they are now three steps of the single `checks` job,
+# because GitHub bills each job rounded up to a full minute and all three finished in under ten
+# seconds. The context name and the job key in checks.yml must move together — a required
+# context whose job no longer exists hangs every PR PENDING FOREVER.
+expected=$(printf 'checks')
+assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {checks}"
+# And the job that reports it must actually be there, under exactly that key.
+if grep -A1 '^jobs:' .github/workflows/checks.yml | tail -1 | grep -q '^  checks:$'; then
+  pass "checks.yml declares the job key the ruleset requires"
+else
+  fail "checks.yml must declare a job keyed 'checks' — the ruleset requires that exact context"
+fi
 
 # ---------------------------------------------------------------------------------------
 # THE THREE FIELDS THAT SILENTLY DEFANG A RULESET. Each of these was, at some point in this

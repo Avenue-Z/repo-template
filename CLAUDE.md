@@ -30,12 +30,13 @@ Declared in `.env.example`. Copy to `.env.local`. Never commit `.env.local`.
 
 ## Workflow rules
 1. Branch flow is `feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/* → dev → staging → main`.
-   **Never push directly to `main`.** `CONTRIBUTING.md` is canonical; `guard-base-branch` enforces it
+   **Never push directly to `main`.** `CONTRIBUTING.md` is canonical; the `checks` workflow enforces it
    and **fails closed on any prefix not in that list**.
 2. Sync before you start: `git fetch --all --prune && git log origin/dev..HEAD`.
 3. Verify before claiming done — run the tests and read the output. Do not assert a pass you
    have not seen.
-4. Never commit credentials. `.gitignore` is a denylist and denylists leak; `secret-scan` is the
+4. Never commit credentials. `.gitignore` is a denylist and denylists leak; the `secret-scan`
+   step of the `checks` workflow is the
    real control.
 5. **Python repos:** if this repo reads external data or emits a deliverable, it needs a data
    contract. Do not hand-author one — run `contract init` (see `README.md`). `contract lint` and

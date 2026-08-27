@@ -115,7 +115,7 @@ if [ "${VIS}" != "PUBLIC" ] && [ "${PLAN}" = free ]; then
   warn "${REPO} is PRIVATE and ${ORG} is on the Free plan."
   warn "  Branch protection and rulesets are UNAVAILABLE here. Nothing was applied."
   warn "  main/staging/dev are NOT protected. A direct push to main will succeed."
-  warn "  Enforcement in this repo is: guard-base-branch + secret-scan on PRs, and convention."
+  warn "  Enforcement in this repo is: the 'checks' workflow on PRs, and convention."
   warn "  To get real protection: make this repo public, or upgrade ${ORG} to GitHub Team."
   exit 0                       # NOT an error — an honest report of a plan limit.
 fi

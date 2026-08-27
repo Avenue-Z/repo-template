@@ -138,14 +138,23 @@ assert_file "the SCA policy file exists" .github/sca-policy.json
 assert_eq "client-facing" "$(jq -r '.tier' .github/sca-policy.json)" "shipped .github/sca-policy.json tier == client-facing"
 
 # --- design §Testing (b): the policy is present AND referenced by the SCA workflow ------
-echo "sca workflow: it reads the policy and runs the gate under a job named 'sca'"
-WF=.github/workflows/sca.yml
+echo "sca workflow: it reads the policy and runs the gate as a step of the merged 'checks' job"
+WF=.github/workflows/checks.yml
 assert_file "the SCA workflow exists" "$WF"
 wf="$(cat "$WF")"
-assert_match "sca.yml runs scripts/sca-gate.sh"           'scripts/sca-gate\.sh'      "$wf"
-assert_match "sca.yml references .github/sca-policy.json"  '\.github/sca-policy\.json' "$wf"
-assert_match "sca.yml declares a job keyed 'sca' (the required context must reach a real job)" '^[[:space:]]*sca:' "$wf"
-assert_match "sca.yml is read-only (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
+assert_match "checks.yml runs scripts/sca-gate.sh"           'scripts/sca-gate\.sh'      "$wf"
+assert_match "checks.yml references .github/sca-policy.json"  '\.github/sca-policy\.json' "$wf"
+assert_match "checks.yml is read-only (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
+# The SCA gate is a STEP now, so failing it does not fail the job on its own — continue-on-error
+# records an outcome and the verdict step renders judgment. Both halves of that wiring have to
+# exist, or a real finding turns the step red in the log and the job still goes GREEN.
+assert_match "the sca step carries id: sca"            'id: sca'                    "$wf"
+assert_match "the verdict reads that step's outcome"   'steps\.sca\.outcome'       "$wf"
+assert_match "the verdict names sca as a gate"         'sca:\$\{SCA_RESULT\}'      "$wf"
+# osv-scanner walks the filesystem. If the base-branch checkout were left in the workspace it
+# would be scanned too, and a PR that FIXES a vulnerable dependency would still fail on the old
+# manifest sitting in .trusted-base.
+assert_match "the base checkout is removed before anything scans the tree" 'rm -rf \.trusted-base' "$wf"
 
 # --- the stated boundary and the auto-remediation step are documented (not just in the plan) ---
 echo "docs: the SCA tier boundary and the auto-remediation step are recorded"

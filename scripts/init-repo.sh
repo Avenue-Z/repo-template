@@ -320,12 +320,23 @@ add_dependabot_ecosystem() {
   local eco
   # next is a node project — same ecosystem, different skeleton.
   case "${STACK}" in python) eco=pip ;; node|next) eco=npm ;; esac
+  # Grouped, for the same reason the github-actions block above is: every Dependabot PR fires
+  # the whole workflow set, and GitHub bills each job rounded up to a full minute. Ungrouped,
+  # this ecosystem alone could keep five PRs open at once, each re-running everything on every
+  # push. Weekly is kept here (unlike github-actions, which is monthly) because application
+  # dependencies move faster and carry more of the real risk.
   cat >> .github/dependabot.yml <<EOF
   - package-ecosystem: ${eco}
     directory: "/"
     schedule: { interval: weekly }
     target-branch: dev
     open-pull-requests-limit: 5
+    groups:
+      # Majors stay ungrouped on purpose — a single breaking major must not hold every other
+      # pending update hostage in one unmergeable PR.
+      ${eco}-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 EOF
   info "added the '${eco}' ecosystem to .github/dependabot.yml"
 }

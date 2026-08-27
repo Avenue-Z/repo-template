@@ -85,11 +85,26 @@ assert_eq 0 "$(ci_gate_rc "test:success" "bandit:$bres")" "internal high/high le
 echo "ci.yml wiring: the python ci job actually gates on bandit's result"
 PYCI=templates/python/.github/workflows/ci.yml
 pyci="$(cat "$PYCI")"
-assert_match "python ci.yml declares a 'bandit:' job"                 '^[[:space:]]*bandit:[[:space:]]*$' "$pyci"
-assert_match "python ci.yml runs scripts/bandit-gate.sh"             'scripts/bandit-gate\.sh'           "$pyci"
-assert_match "python ci job 'needs' includes bandit"                  'needs:.*bandit'                    "$pyci"
-assert_match "python ci gate calls scripts/ci-aggregate-gate.sh"     'scripts/ci-aggregate-gate\.sh'     "$pyci"
-assert_match "python ci gate passes needs.bandit.result to the gate"  'needs\.bandit\.result'             "$pyci"
+# Bandit is a STEP of the `ci` aggregate job now, not a sibling job. It ran for ~8 seconds and
+# billed a full rounded-up minute on every run; the aggregate job has to exist anyway to own the
+# stable `ci` context, so the gate moved inside it. The GATING is deliberately unchanged — the
+# same ci-aggregate-gate.sh, the same "anything not exactly success blocks" rule — only the
+# source of bandit's verdict moved from needs.bandit.result to steps.bandit.outcome.
+assert_match "python ci.yml runs scripts/bandit-gate.sh"              'scripts/bandit-gate\.sh'        "$pyci"
+assert_match "python ci gate calls scripts/ci-aggregate-gate.sh"      'scripts/ci-aggregate-gate\.sh'  "$pyci"
+assert_match "bandit is a step carrying id: bandit"                   'id: bandit'                     "$pyci"
+assert_match "python ci gate passes steps.bandit.outcome to the gate" 'steps\.bandit\.outcome'         "$pyci"
+# THE TRAP THIS GUARDS. As a step under continue-on-error, bandit no longer fails the job by
+# itself — the verdict step does. Drop the continue-on-error and a finding aborts the job before
+# the matrix verdict is rendered; drop the verdict's bandit argument and a finding turns the step
+# red in the log while the required `ci` check goes GREEN. Both halves must be present.
+assert_match "the bandit step is continue-on-error (the verdict decides, not the step)" 'continue-on-error: true' "$pyci"
+# The old sibling job must be GONE, or the repo pays the billed minute the move was meant to save.
+assert_nomatch "python ci.yml no longer declares a separate 'bandit:' job" '^[[:space:]]*bandit:[[:space:]]*$' "$pyci"
+# ANCHORED to a real YAML key. An unanchored /needs:.*bandit/ also matches PROSE — the comment
+# in ci.yml explaining that the aggregate `needs: [test]` so bandit no longer runs in parallel
+# trips it. A test that forbids documenting the change it is testing is a broken test.
+assert_nomatch "python ci job no longer 'needs' a bandit job"  '^[[:space:]]*needs:.*bandit'  "$pyci"
 
 echo "no-hang property (d): node and next carry NO bandit job, but their ci context still reports"
 for stack in node next; do

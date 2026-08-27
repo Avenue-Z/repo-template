@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 # shellcheck source=template-tests/lib.sh disable=SC1091
 source template-tests/lib.sh
 
-WORKFLOW=.github/workflows/guard-base-branch.yml
+WORKFLOW=.github/workflows/checks.yml
 SCRIPT=scripts/check-base-branch.sh
 
 # Exercises the SAME script the workflow calls — not a copy of the case statement.
@@ -55,11 +55,24 @@ else
 fi
 assert_match "declares a read-only permissions block" 'contents: *read' "$wf"
 
-echo "guard-base-branch: job id"
-if grep -A1 '^jobs:' "$WORKFLOW" | tail -1 | grep -q '^  guard-base-branch:$'; then
-  pass "jobs key is literally guard-base-branch"
+echo "guard-base-branch: it is a step of the merged 'checks' job"
+# The guard used to be its own workflow and its own required context. It is now the first gate
+# in checks.yml, because three single-step jobs billed 160 minutes a month to do 19 minutes of
+# work. The context the ruleset requires is therefore 'checks', not 'guard-base-branch'.
+if grep -A1 '^jobs:' "$WORKFLOW" | tail -1 | grep -q '^  checks:$'; then
+  pass "jobs key is literally checks (the ruleset requires that exact context)"
 else
-  fail "jobs key must be literally 'guard-base-branch'"
+  fail "jobs key must be literally 'checks' (the ruleset requires that exact context)"
 fi
+# The guard must still actually RUN, and from the trusted copy staged out of the base checkout.
+# Pointing it at scripts/check-base-branch.sh in the workspace would silently hand the PR back
+# the script that judges it — the exact hole the base checkout above exists to close.
+if grep -qE '\$\{RUNNER_TEMP\}/trusted-scripts/check-base-branch\.sh" "\$\{HEAD_REF\}" "\$\{BASE_REF\}"' "$WORKFLOW"; then
+  pass "the guard runs the trusted (base-branch) copy of check-base-branch.sh"
+else
+  fail "the guard must invoke \${RUNNER_TEMP}/trusted-scripts/check-base-branch.sh — not the PR's own copy"
+fi
+# The guard is skipped on push (there is no base_ref), so its outcome must only be judged on a PR.
+assert_match "the guard step is restricted to pull_request" "if: github.event_name == 'pull_request'" "$wf"
 
 finish

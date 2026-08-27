@@ -22,7 +22,7 @@ source template-tests/lib.sh
 #
 # There is no dependabot config that fixes this (it will not scan a nested .github/workflows for
 # the github-actions ecosystem). So the fix is a LOCKSTEP TEST, the same idiom this repo already
-# uses to keep the gitleaks version in secret-scan.yml matched to the pre-commit hook:
+# uses to keep the gitleaks version in checks.yml matched to the pre-commit hook:
 #
 #     any action used in BOTH the core and a template must be pinned to the SAME SHA.
 #

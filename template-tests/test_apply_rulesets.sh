@@ -28,8 +28,12 @@ else
     pass "confirmed no ci.yml present (test precondition for the anti-brick case)"
   fi
   assert_nomatch "'ci' is NOT listed as a required status check" 'required: ci$' "$out"
-  assert_match   "'guard-base-branch' is listed as required" 'required: guard-base-branch' "$out"
-  assert_match   "'secret-scan' is listed as required" 'required: secret-scan' "$out"
+  assert_match   "'checks' is listed as required" 'required: checks' "$out"
+  # The three contexts the merged `checks` job replaced must NOT still be demanded. Leaving one
+  # behind is the brick: nothing reports it any more, so it hangs every PR PENDING FOREVER.
+  assert_nomatch "'guard-base-branch' is no longer required (it is a step of 'checks')" 'required: guard-base-branch' "$out"
+  assert_nomatch "'secret-scan' is no longer required (it is a step of 'checks')" 'required: secret-scan' "$out"
+  assert_nomatch "'sca' is no longer required (it is a step of 'checks')" 'required: sca$' "$out"
   # The MIRROR of the anti-brick case: the template DOES carry template-tests.yml, so the file-gated
   # add_context MUST inject 'template-tests' here. Asserting the injection (not just its absence when
   # the workflow is gone) is the behavioral coverage the file-gating condition otherwise lacked — a

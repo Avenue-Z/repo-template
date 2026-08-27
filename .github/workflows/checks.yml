@@ -1,0 +1,262 @@
+name: checks
+
+# ONE JOB, THREE GATES. This file is the merger of what used to be guard-base-branch.yml,
+# secret-scan.yml and sca.yml.
+#
+# WHY: GitHub bills every job rounded UP to a full minute. Those three jobs did ~19 minutes of
+# real work a month and billed 160, because each one finishes in 6-8 seconds and each one is a
+# separate job. Merging them into three sequential STEPS of one job cuts that to ~54 billed
+# minutes with no check weakened. Job COUNT is the cost driver here, not job duration — do not
+# "optimise" this by caching downloads; a 21s job and a 12s job bill exactly the same.
+#
+# The job key MUST stay literally `checks`. .github/rulesets/repo-ruleset.json requires the
+# status-check context "checks" (BAKED IN, because this workflow ships into every generated
+# repo). A required check that never reports does NOT fail a PR — it hangs it PENDING FOREVER
+# and nothing can be merged again. Renaming this job without repo-ruleset.json in the same
+# commit bricks every repo the ruleset was applied to.
+
+on:
+  # `edited` came from guard-base-branch and is load-bearing: a PR retargeted at a new base must
+  # be re-judged, and `edited` is the only event that fires on a base change. The rest are the
+  # pull_request default set.
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+  # WHY A CRON AND NOT `push`. These two scanners used to run on every push to dev/staging/main,
+  # which cost ~30 billed jobs a month to re-scan commits that had just been scanned as PR heads.
+  # But re-scanning on push was never the point — both of these gates have a second, TIME-based
+  # job that a push trigger serves badly:
+  #
+  #   gitleaks -> with no base_ref the step scans the FULL history (see the step below). That is a
+  #               repo-wide audit, and an audit's value comes from running regularly, not from
+  #               running once per merge.
+  #   osv      -> a dependency that was clean yesterday is not clean today if an advisory landed
+  #               overnight. Nothing in the tree has to CHANGE for the answer to change, so a
+  #               change-triggered scan is the wrong shape entirely.
+  #
+  # A weekly cron does both jobs strictly better and costs ~4 runs a month instead of ~30.
+  #
+  # Two things to know about scheduled runs. They fire on the DEFAULT branch only — `main` here,
+  # which is the deployed code and so the right audit target. And GitHub DISABLES a cron in any
+  # repo with no activity for 60 days; a dormant repo therefore stops auditing itself silently.
+  #
+  # A failing scheduled run blocks nothing — nothing is waiting on it. It is a notification, not
+  # a gate. The gate is the pull_request path above.
+  schedule:
+    - cron: '0 6 * * 1'    # Mondays, 06:00 UTC
+
+# Read-only, and it must stay that way. This job inspects two ref names, greps history for
+# credentials and resolves a dependency tree; none of that writes to the repo. This is the union
+# of the three originals' permissions blocks — which were all `contents: read`, so the union is
+# still the minimum. Without this block the job inherits whatever the repo/org default
+# GITHUB_TOKEN scope happens to be, which on many orgs is read-write.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      # ---------------------------------------------------------------- trusted scripts
+      # Check out the BASE branch, not the PR's head, and take the guard's decision logic from
+      # it. Otherwise the guard (scripts/check-base-branch.sh) is supplied by the very PR it is
+      # judging: a PR from wip/x -> main that also rewrote check-base-branch.sh to `exit 0`
+      # would pass its own guard, and with required_approving_review_count: 0 nobody has to look.
+      #
+      # It lands in a subdirectory that is DELETED before any scanner runs. That is not tidiness:
+      # osv-scanner walks the filesystem (`scan -r ./`), so a base-branch tree left lying inside
+      # the workspace would get scanned too — and a PR whose whole purpose is to FIX a vulnerable
+      # dependency would still fail sca on the copy of the old manifest.
+      #
+      # This does NOT fully close the hole, and the docs must not pretend otherwise: Actions
+      # still reads THIS WORKFLOW FILE from the PR head, so a PR that rewrites checks.yml itself
+      # can still neuter all three gates. That is why .github/ must be code-owned. Stated plainly
+      # in SECURITY.md and the spec's enforcement table.
+      - name: Checkout the base branch (the guard must not be supplied by the PR it guards)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          persist-credentials: false
+          path: .trusted-base
+
+      # ci-aggregate-gate.sh is staged here for the SAME reason check-base-branch.sh is, and the
+      # reason is new to this merged design. When the three gates were three jobs, each reported
+      # its own check and there was no shared verdict to attack. Now a single script decides
+      # whether the job goes red. If that script came from the PR's own tree, a PR could rewrite
+      # it to `exit 0` and neuter the guard, the secret scan and the SCA gate in one line —
+      # re-opening precisely the hole the base checkout above exists to close. So the verdict
+      # logic is taken from the protected branch too, and kept in RUNNER_TEMP, which is OUTSIDE
+      # GITHUB_WORKSPACE and therefore survives the re-checkout below and is never scanned.
+      - name: Stage the trusted scripts outside the workspace
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/trusted-scripts"
+          install -m 0755 .trusted-base/scripts/check-base-branch.sh  "${RUNNER_TEMP}/trusted-scripts/"
+          install -m 0755 .trusted-base/scripts/ci-aggregate-gate.sh "${RUNNER_TEMP}/trusted-scripts/"
+          # Delete it BEFORE anything scans the workspace (see the step above).
+          rm -rf .trusted-base
+
+      # ---------------------------------------------------------------- gate 1: base branch
+      # continue-on-error is what turns a failing GATE into a recorded outcome instead of an
+      # aborted job. Without it the first failure ends the run and the developer never learns
+      # that their PR ALSO leaks a key — they fix the branch target, push, and discover the
+      # secret on the next round trip. That extra round trip is itself another billed job.
+      # The job is failed at the end, by the verdict step, from these recorded outcomes.
+      - name: 'gate: enforce the base-branch matrix'
+        id: guard
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          echo "PR: ${HEAD_REF} -> ${BASE_REF}"
+          "${RUNNER_TEMP}/trusted-scripts/check-base-branch.sh" "${HEAD_REF}" "${BASE_REF}"
+
+      # ---------------------------------------------------------------- the tree under review
+      # Now the PR's own tree, which is what the two scanners are supposed to look at.
+      # fetch-depth: 0 for two reasons, both inherited from secret-scan.yml: the push path scans
+      # all of history, and the PR path needs origin/<base> present locally to diff against.
+      - name: Checkout the tree under review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # ---------------------------------------------------------------- gate 2: secrets
+      - name: install gitleaks
+        run: |
+          set -euo pipefail
+          # Keep this version in lockstep with the gitleaks rev in .pre-commit-config.yaml.
+          # template-tests/test_secret_scan.sh asserts they match: a drifted pair means the
+          # hook a developer runs locally is not the scanner that gates their PR.
+          GITLEAKS_VERSION="8.21.2"
+          ASSET="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          BASE_URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          # --fail is load-bearing: without it curl exits 0 on a 404 and writes the HTML error
+          # page to disk under the asset's name, and the real failure only surfaces later as a
+          # baffling tar or checksum error.
+          # Download under the ASSET name: checksums.txt lists that exact filename, and
+          # `sha256sum --ignore-missing` verifies NOTHING (and errors) if it is not on disk.
+          curl --fail -sSLo "${ASSET}" "${BASE_URL}/${ASSET}"
+          curl --fail -sSLo checksums.txt "${BASE_URL}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c checksums.txt
+          tar -xzf "${ASSET}" gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+          # The scanners must not find the tarball and checksum file we just dropped in the tree.
+          rm -f "${ASSET}" checksums.txt
+
+      - name: 'gate: gitleaks detect'
+        id: secret_scan
+        continue-on-error: true
+        env:
+          # Via env, never interpolated into the script body: a ref name is attacker-influenced
+          # input, and `${{ }}` inside `run:` is textual substitution, not a shell variable.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # --exit-code 1 IS the control. Without it gitleaks prints the leak and exits 0,
+          # and this required check goes green on a PR carrying a live credential.
+          #
+          # SCOPE IS EQUALLY LOAD-BEARING. `gitleaks detect` with no --log-opts scans EVERY
+          # commit in the repo, not the change under review. So one secret committed once — even
+          # one long since deleted and rotated — fails EVERY subsequent PR, forever, however
+          # innocent. The repo becomes permanently unmergeable, and rotating the key (the remedy
+          # SECURITY.md prescribes) does NOT turn the check green; only rewriting history does.
+          #
+          # So the two events get the scope each one actually wants:
+          #   pull_request -> scan exactly the commits this PR adds on top of its base. A PR is
+          #                   answerable for what it introduces, not for the repo's past.
+          #   schedule     -> scan the full history. A repo-wide audit belongs on the default
+          #                   branch, on a clock, where a finding is real news and blocks nothing
+          #                   that a contributor cannot act on.
+          #
+          # BASE_REF is the discriminator, not the event name: it is set on pull_request and empty
+          # on a scheduled run, which is exactly the distinction the two scopes turn on.
+          if [ -n "${BASE_REF:-}" ]; then
+            echo "pull_request: scanning the commits this PR adds on top of origin/${BASE_REF}"
+            gitleaks detect --source . --redact --verbose --exit-code 1 \
+              --log-opts "origin/${BASE_REF}..HEAD"
+          else
+            echo "scheduled audit: scanning the full history"
+            gitleaks detect --source . --redact --verbose --exit-code 1
+          fi
+
+      # ---------------------------------------------------------------- gate 3: dependencies
+      - name: install osv-scanner
+        run: |
+          set -euo pipefail
+          # Pinned. Dependabot cannot bump a binary downloaded inside a run, so this is a MANUAL
+          # bump — the same tradeoff the gitleaks install above makes.
+          OSV_VERSION="2.4.0"
+          ASSET="osv-scanner_linux_amd64"
+          BASE_URL="https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}"
+          # --fail is load-bearing: without it curl exits 0 on a 404 and writes the HTML error page
+          # under the asset name, surfacing later as a baffling exec or checksum error.
+          curl --fail -sSLo "${ASSET}" "${BASE_URL}/${ASSET}"
+          curl --fail -sSLo osv-scanner_SHA256SUMS "${BASE_URL}/osv-scanner_SHA256SUMS"
+          # The SHA256SUMS file lists every asset; --ignore-missing verifies only the one on disk
+          # (and ERRORS if it is absent, so this cannot silently verify nothing).
+          sha256sum --ignore-missing -c osv-scanner_SHA256SUMS
+          chmod +x "${ASSET}"
+          sudo mv "${ASSET}" /usr/local/bin/osv-scanner
+          osv-scanner --version
+          # Leave nothing behind in the tree that osv-scanner is about to walk.
+          rm -f osv-scanner_SHA256SUMS
+
+      - name: 'gate: scan the dependency tree and apply the policy'
+        id: sca
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # osv-scanner's expected exits: 0 = no vulns, 1 = vulns found, 128 = no packages to scan.
+          # 1 and 128 are NOT this gate's verdict — the tier threshold is applied by sca-gate.sh — so
+          # we allow those through. But `|| true` would also swallow a scanner ERROR (network/panic):
+          # that yields NO report, which sca-gate.sh reads as "nothing to scan" -> a green check with
+          # nothing actually scanned. That is fail-OPEN, the opposite of the secret gate's posture. So
+          # allow only the known-good codes and fail the step on anything else.
+          rc=0
+          osv-scanner scan -r --format json --output-file osv.json ./ || rc=$?
+          case "${rc}" in
+            0|1|128) ;;
+            *) echo "::error::osv-scanner exited ${rc} (not a findings/no-package code) — failed scan, refusing to report a clean check"; exit "${rc}" ;;
+          esac
+          scripts/sca-gate.sh osv.json .github/sca-policy.json
+
+      # ---------------------------------------------------------------- the verdict
+      # `if: always()` is load-bearing: without it this step is SKIPPED the moment an earlier
+      # step errors outright (an install failure, say), and the job would then end on whatever
+      # that step returned rather than on a considered verdict.
+      #
+      # continue-on-error means each gate above recorded an OUTCOME instead of ending the run, so
+      # nothing has actually failed the job yet. This step is the only thing that can. It reuses
+      # scripts/ci-aggregate-gate.sh unchanged — the same "anything that is not exactly 'success'
+      # fails" rule the `ci` job uses — so there is one verdict rule in this template, not two.
+      # `skipped` is therefore a FAILURE, deliberately: a gate that did not run has not passed.
+      # The one legitimate skip is the guard on a push event, which is why it is only named as an
+      # argument on pull_request.
+      - name: verdict
+        if: always()
+        env:
+          EVENT: ${{ github.event_name }}
+          GUARD_RESULT: ${{ steps.guard.outcome }}
+          SECRET_SCAN_RESULT: ${{ steps.secret_scan.outcome }}
+          SCA_RESULT: ${{ steps.sca.outcome }}
+        run: |
+          set -euo pipefail
+          # On pull_request the trusted, base-branch copy is the ONLY acceptable source (see the
+          # staging step). On a scheduled run there is no base checkout and no need for one: cron
+          # fires on the DEFAULT branch, so the workspace copy IS the protected branch's copy.
+          GATE="${RUNNER_TEMP}/trusted-scripts/ci-aggregate-gate.sh"
+          if [ "${EVENT}" = "pull_request" ]; then
+            [ -x "${GATE}" ] || { echo "::error::the trusted verdict script is missing — refusing to report a verdict"; exit 1; }
+          else
+            GATE=scripts/ci-aggregate-gate.sh
+          fi
+
+          args=( "secret-scan:${SECRET_SCAN_RESULT}" "sca:${SCA_RESULT}" )
+          [ "${EVENT}" != "pull_request" ] || args+=( "guard-base-branch:${GUARD_RESULT}" )
+          "${GATE}" "${args[@]}"

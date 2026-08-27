@@ -14,14 +14,29 @@ denylists leak** — it is a convenience, not a control. The controls are:
 | Control | Boundary |
 |---|---|
 | gitleaks pre-commit hook | Local, and **skippable with `--no-verify`** |
-| `secret-scan` CI job | **Merge** — it fails the PR |
+| the `secret-scan` step of the `checks` CI job | **Merge** — it fails the PR |
+| the weekly `checks` audit (cron) | **Detection only** — see below |
+
+The PR path scans only the commits a PR adds. The repo-wide, full-history sweep runs on a weekly
+cron instead, because that is a time-based question, not a change-based one — and so is the other
+half of the audit, osv-scanner re-checking unchanged dependencies against advisories published
+since the last run. Two boundaries follow from that, and neither is obvious:
+
+- **It blocks nothing.** Nothing is waiting on a scheduled run, so a finding is a notification.
+  Someone has to be watching the Actions tab or the failure notification for it to mean anything.
+- **GitHub disables `schedule:` in any repo with 60 days of no activity.** A dormant repo
+  therefore stops auditing itself, silently, and the Actions tab looks calm because it is empty.
+  A repo that has gone quiet has not been checked recently — re-run the workflow by hand before
+  trusting its history.
 
 ## The base-branch guard can be bypassed by a PR that edits the guard — ACCEPTED, NOT MITIGATED
 
-`guard-base-branch` runs on `pull_request`, and GitHub Actions reads the workflow file **from the
-PR's head**. The workflow checks out the base branch to get `scripts/check-base-branch.sh`, so a
-PR cannot rewrite the *decision logic* it is judged by — but a PR that edits
-`.github/workflows/guard-base-branch.yml` itself can still neuter the check.
+The base-branch guard is the first step of the `checks` job. It runs on `pull_request`, and
+GitHub Actions reads the workflow file **from the PR's head**. The job checks out the base branch
+to get `scripts/check-base-branch.sh` — and, since the merge, `scripts/ci-aggregate-gate.sh` too,
+because one shared verdict script now decides all three gates and a PR-supplied copy could switch
+them all off at once. So a PR cannot rewrite the *decision logic* it is judged by — but a PR that
+edits `.github/workflows/checks.yml` itself can still neuter the check.
 
 **Nothing currently stops that. This section used to claim CODEOWNERS did, and that was false.**
 
@@ -38,9 +53,11 @@ is still worth having for that routing (a change to the guard lands in the right
 script's insistence on a team with write access is still correct — a CODEOWNERS naming a team
 without write is ignored outright, so it would not even route. But routing is all it buys.
 
-So: **anyone with write access can neuter `guard-base-branch` in a PR and merge it unreviewed.**
-The compensating factors are a small team, convention, and the fact that `secret-scan` is a
-separate workflow the same PR would also have to disable. That is the whole of it.
+So: **anyone with write access can neuter the base-branch guard in a PR and merge it unreviewed.**
+The compensating factor is a small team and convention. Note that this got *weaker* when the three
+gate workflows merged into `checks.yml`: the secret scan used to be a separate workflow that the
+same PR would also have to disable, and now one edit to one file disables all three at once. The
+saving was ~106 billed minutes a month per repo; this is what it cost. That is the whole of it.
 
 **To actually close this**, a repo must require review: set `require_code_owner_review: true` and
 `required_approving_review_count: 1` in `repo-ruleset.json` (and update the assertions in

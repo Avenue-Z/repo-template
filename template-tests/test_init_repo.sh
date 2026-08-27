@@ -43,9 +43,14 @@ assert_no_file "the template's own test_sca.sh did not ship (it lives in templat
 # that repo's required checks, it would never report and hang every PR PENDING FOREVER.
 assert_no_file "template-tests.yml workflow removed (it runs a suite that no longer exists here)" .github/workflows/template-tests.yml
 # The workflows a generated repo SHOULD keep must survive the cull.
-assert_file    "guard-base-branch.yml survived" .github/workflows/guard-base-branch.yml
-assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
-assert_file    "sca.yml survived (core workflow, ships into generated repos)" .github/workflows/sca.yml
+assert_file    "checks.yml survived (core workflow, ships into generated repos)" .github/workflows/checks.yml
+# The three workflows checks.yml replaced must be GONE, not merely unreferenced. A generated repo
+# that shipped both would pay for the jobs twice over — the whole point of the merge — and would
+# report contexts the ruleset no longer requires.
+assert_no_file "guard-base-branch.yml is gone (merged into checks.yml)" .github/workflows/guard-base-branch.yml
+assert_no_file "secret-scan.yml is gone (merged into checks.yml)" .github/workflows/secret-scan.yml
+assert_no_file "sca.yml is gone (merged into checks.yml)" .github/workflows/sca.yml
+assert_file    "check-base-branch.sh survived (checks.yml stages it from the base branch)" scripts/check-base-branch.sh
 assert_file    "sca-policy.json survived" .github/sca-policy.json
 assert_file    "sca-gate.sh survived" scripts/sca-gate.sh
 # Same class as the SCA scripts above: the generated python repo's required `ci` check runs both of

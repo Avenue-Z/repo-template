@@ -51,4 +51,15 @@ assert_match "on: declares workflow_call (consumers call it)"  'workflow_call'  
 assert_match "on: still declares pull_request (it guards repo-template itself)" 'pull_request' "$(jq -r '.on|join(" ")' <<<"$actual")"
 assert_match "on: still declares the weekly audit"             'schedule'       "$(jq -r '.on|join(" ")' <<<"$actual")"
 
+echo "reusable contract: the self-call gates the tag (layer 2 of the spec's §4)"
+TT=.github/workflows/template-tests.yml
+tt="$(cat "$TT")"
+# It must live INSIDE template-tests.yml. advance-v1.yml chains off the template-tests workflow RUN,
+# so a self-call published as its own workflow would not gate anything and v1 could advance carrying a
+# reusable workflow that is not callable at all — the one failure this layer exists to catch.
+assert_match "template-tests.yml calls checks.yml locally" 'uses: \./\.github/workflows/checks\.yml' "$tt"
+# Push-only. On every PR it would be one extra billed job per PR across the fleet, in a design whose
+# premise is that job COUNT is the bill.
+assert_match "the self-call runs on push, not on every PR" "github\.event_name == 'push'" "$tt"
+
 finish

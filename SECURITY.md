@@ -71,6 +71,17 @@ store — where it survives even if the PR is closed unmerged.
 
 **A key that reached the remote is burned. Rotate it.** Removing the commit is not sufficient.
 
+This hole does not close under the reusable-workflow design — it **changes shape, and gets subtler**.
+Actions still reads the workflow file from the PR head. Previously neutering the gates meant rewriting
+a 262-line `checks.yml` in a way a reviewer would notice at a glance. Now it is changing `@v1` to
+`@my-branch` on **one line of a nine-line file**. Same hole, materially easier to miss in review.
+
+**`.github/` being code-owned therefore goes from good practice to load-bearing.** Note what that
+currently requires and does not yet have: `repo-template` ships `.github/CODEOWNERS.tmpl` and only
+`scripts/init-repo.sh` instantiates it, so this repository has no live CODEOWNERS at all, and the
+shipped ruleset sets `require_code_owner_review: false`. In both populations code ownership is a
+convention today, not a control.
+
 ## The SCA tier is only as current as the last person who set it — ACCEPTED, NOT MITIGATED
 
 `.github/sca-policy.json` carries the dependency-scanning tier. Default `client-facing`: the `sca`

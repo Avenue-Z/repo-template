@@ -95,6 +95,24 @@ add_context() { # <context> <workflow-file> <why-it-matters>
     info "no $2 — not requiring '$1' ($3)"
   fi
 }
+# The `checks` context is NOT baked into repo-ruleset.json, because that file is shared by the
+# template and by every generated repo and the two report DIFFERENT context names:
+#
+#   repo-template  -> checks.yml is the reusable workflow itself. Its pull_request runs are ordinary
+#                     top-level jobs, so the context is literally `checks`.
+#   a generated repo -> checks.yml is a CALLER. A called job's context is `<caller-job> / <called-job>`,
+#                     so the context is `checks / checks`.
+#
+# Requiring the wrong one does not fail a PR — it hangs it PENDING FOREVER. `workflow_call` in the
+# local checks.yml is the discriminator, and it is a discriminator rather than a guess because
+# template-tests/test_reusable_contract.sh asserts that declaration is present.
+if [ ! -f .github/workflows/checks.yml ]; then
+  info "no .github/workflows/checks.yml — not requiring any 'checks' context"
+elif grep -qE '^ *workflow_call:' .github/workflows/checks.yml; then
+  add_context 'checks'          .github/workflows/checks.yml "this checks.yml IS the reusable workflow"
+else
+  add_context 'checks / checks' .github/workflows/checks.yml "this checks.yml is a caller; a called job reports '<caller>/<called>'"
+fi
 add_context ci             .github/workflows/ci.yml             "a required check with no workflow hangs every PR pending forever"
 add_context template-tests .github/workflows/template-tests.yml "this workflow is the template's own, and init-repo.sh removes it"
 info "required status checks:"

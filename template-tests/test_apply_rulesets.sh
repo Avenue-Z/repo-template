@@ -28,7 +28,9 @@ else
     pass "confirmed no ci.yml present (test precondition for the anti-brick case)"
   fi
   assert_nomatch "'ci' is NOT listed as a required status check" 'required: ci$' "$out"
-  assert_match   "'checks' is listed as required" 'required: checks' "$out"
+  # THIS repo's checks.yml declares workflow_call, so it is the template and reports plain `checks`.
+  assert_match   "'checks' is required here (this checks.yml declares workflow_call)" 'required: checks$' "$out"
+  assert_nomatch "'checks / checks' is NOT required here" 'required: checks / checks' "$out"
   # The three contexts the merged `checks` job replaced must NOT still be demanded. Leaving one
   # behind is the brick: nothing reports it any more, so it hangs every PR PENDING FOREVER.
   assert_nomatch "'guard-base-branch' is no longer required (it is a step of 'checks')" 'required: guard-base-branch' "$out"
@@ -178,5 +180,51 @@ else
 fi
 assert_match   "explains the lookup failure" 'cannot list existing rulesets' "$out_fail"
 assert_nomatch "never falls through to claiming it would create/POST a duplicate" 'would post|create new' "$out_fail"
+
+# ---------------------------------------------------------------------------------------
+# THE OTHER BRANCH — a CALLER's checks.yml must require the renamed 'checks / checks' context.
+#
+# The guarded block at the top of this file proves the template's own case (plain `checks`), but
+# it only runs with real Avenue-Z org access — never on a CI runner, whose GITHUB_TOKEN is
+# repo-scoped. Asserting only that branch is how the CONSUMER branch would ship untested, and the
+# consumer branch is the one that runs in the ~11 generated repos. So this block runs
+# UNCONDITIONALLY, driving a caller-shaped checks.yml through the same gh-stub technique used
+# above.
+#
+# The fixture is a temp directory holding COPIES of THIS WORKING TREE's apply-rulesets.sh and
+# repo-ruleset.json — not a `git clone`, which would exercise the last COMMITTED version rather
+# than the change under test — plus a caller-shaped checks.yml. It deliberately carries no
+# ci.yml or template-tests.yml, so those two contexts stay correctly absent and the negative
+# assertions elsewhere in this suite stay meaningful.
+echo "apply-rulesets: a CALLER's checks.yml requires the renamed 'checks / checks' context"
+FIXTURE="$(mktemp -d)"
+mkdir -p "${FIXTURE}/scripts" "${FIXTURE}/.github/rulesets" "${FIXTURE}/.github/workflows"
+cp scripts/apply-rulesets.sh "${FIXTURE}/scripts/apply-rulesets.sh"
+cp .github/rulesets/repo-ruleset.json "${FIXTURE}/.github/rulesets/repo-ruleset.json"
+cat > "${FIXTURE}/.github/workflows/checks.yml" <<'CALLER'
+name: checks
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+jobs:
+  checks:
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1
+CALLER
+
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+# Minimal fake gh: only needs to answer the org-plan lookup so the script gets past it and
+# prints the required-checks list, which happens before any repo lookup.
+case "$*" in
+  *"orgs/Avenue-Z"*) echo free ;;
+  *) echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB}/gh"
+
+cout="$(cd "${FIXTURE}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1 || true)"
+assert_match   "a caller requires 'checks / checks'" 'required: checks / checks' "$cout"
+assert_nomatch "a caller does NOT require the plain 'checks' context" 'required: checks$' "$cout"
+rm -rf "${FIXTURE}"
 
 finish

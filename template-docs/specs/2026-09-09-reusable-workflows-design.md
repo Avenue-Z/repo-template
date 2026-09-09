@@ -89,6 +89,17 @@ design document written during a CI outage is exactly where that rule gets teste
   The probe designed to answer this never executed. §2 assumes *caller*, which is the documented
   behaviour, but it is unconfirmed here and §2 is wrong in a specific, silent way if it is false: the
   scanners would scan the template's tree and report green on a repo they never looked at.
+- **Whether a consumer's default `GITHUB_TOKEN` can check out `Avenue-Z/repo-template` at all.** This
+  is a *second* access path and the bullet above does not cover it. Resolving and executing a reusable
+  workflow from another repository is one permission; `actions/checkout` cloning that repository from
+  inside the run — which is what §2's script staging does — is another. `GITHUB_TOKEN` is scoped to the
+  repository whose run it belongs to, and cross-repository clones with it are governed by org Actions
+  policy rather than by the template's own settings. **This is the single assumption the whole design
+  rests on and it has not been tested even partially.** If it fails, §2 needs a credential this design
+  does not currently have, and the answer changes what §1's tag protection is protecting.
+  **Phase B probe:** one job in `data-warehouse` — `actions/checkout` with
+  `repository: Avenue-Z/repo-template`, `ref: v1`, `path: .trusted-template`, the default token, then
+  `ls .trusted-template/scripts`. Yes or no, in one billed minute.
 
 ---
 
@@ -125,6 +136,10 @@ a judgement call made under deadline pressure:
    a PR, it hangs it PENDING FOREVER. This is the same failure `template-tests.yml`'s header and
    `checks.yml:11-17` already warn about, now reachable from a different direction.
 2. **A new `input:` or `secret:` with no default.** Existing callers do not pass it and fail to start.
+   The same addition **with** a default is backward-compatible and advances `v1` — but never silently.
+   It still moves the golden contract file, so §4's tripwire still refuses the automatic advance and a
+   maintainer has to acknowledge it in the open. See §4's acknowledgement path; the two sections would
+   otherwise contradict each other, with §1 calling a change non-breaking and §4 refusing to ship it.
 3. **A new failure condition unrelated to the caller's own content** — tightening the default SCA tier
    is the canonical example. It turns green repos red without them having changed anything. Note the
    asymmetry: a gate that gets *stricter about the caller's own code* (a new secret pattern that
@@ -134,7 +149,8 @@ a judgement call made under deadline pressure:
 ### How `v1` moves, and why it must be protected
 
 A workflow on `main`, gated on `template-tests` passing (see §4). **No human ever moves `v1` by
-hand.**
+hand.** (Cutting it the first time is Phase A's job and is done once, by hand, because there is nothing
+for the advance workflow to move yet. The rule is about every advance after that.)
 
 This repo's only ruleset is `avenue-z-branch-protection`, `"target": "branch"` — verified. **Tags are
 therefore entirely unprotected today**, and anyone with push access can force-move `v1` to any commit
@@ -143,6 +159,26 @@ private repos execute as their *only* security gate on GitHub Free. Add a **tag 
 (non-fast-forward + restricted updates) in the same change that first cuts it. Without it this design
 converts a distributed-but-frozen fleet into a fleet with a single unprotected supply-chain root.
 
+**The ruleset must not lock out the workflow that moves the tag.** A ruleset applies to `GITHUB_TOKEN`
+like any other actor, and this repo's house pattern is `"bypass_actors": []` —
+`.github/rulesets/repo-ruleset.json:15` ships exactly that. Written that way, the tag ruleset would
+block §4's advance workflow: `contents: write` is a token permission, and a ruleset is a separate,
+higher control that the permission does not satisfy. The tag ruleset therefore carries **one bypass
+actor: the GitHub Actions app** (`"actor_type": "Integration"`; the app's numeric id is looked up at
+apply time rather than written down here from memory). It targets `refs/tags/v1` exactly, so the
+immutable `v1.N.0` point tags fall outside it and their creation needs no bypass at all.
+
+That keeps the default `GITHUB_TOKEN` sufficient and **adds no secret** — established fact 3 stays
+true. A fine-grained PAT or a dedicated GitHub App was the alternative and is Rejected below: it buys a
+tighter bypass at the price of a long-lived credential to store and rotate in a repo that today needs
+none.
+
+The residual belongs in the open rather than in a footnote: **the bypass is repo-scoped, not
+workflow-scoped.** Any workflow in `repo-template` that requests `contents: write` inherits the ability
+to move `v1`, not just the advance workflow. Today there would be exactly one, and adding a second is a
+change to `.github/`, on a PR, in the repo whose entire subject is this gate. Recorded in
+`## Open items`.
+
 ### Immutable point tags are the rollback story
 
 Cut `v1.0.0`, `v1.1.0`, … alongside each `v1` advance, and never move them. This is not
@@ -150,6 +186,15 @@ bookkeeping — **it is the only way a consumer can respond when `v1` breaks the
 point tag, "pin to the last good version" has no argument to give: the previous `v1` is gone, the
 consumer would have to pin to a raw SHA dug out of the reflog, and in practice they will instead
 delete the caller and lose the gate. A rollback path that requires archaeology is not a rollback path.
+
+**This only works if the gate scripts travel with the tag.** A point tag is a rollback for the
+*workflow file*; it is not one for the ~400 lines of bash that make the decisions unless the staging
+step inside the workflow resolves *its own* version rather than a hardcoded ref. Written the obvious
+way — `ref: v1` in the script checkout — a consumer pinned to `checks.yml@v1.2.0` would still execute
+gate scripts staged from the moving `v1`: the rollback would restore the YAML and leave the behaviour
+it was rolled back from fully in place. That is worse than having no rollback, because it looks like
+one and reports success. §2 resolves the ref from `github.job_workflow_ref` for this reason, and that
+mechanism is what makes this section true rather than aspirational.
 
 ## The org-wide branch matrix
 
@@ -189,7 +234,7 @@ exactly clause 3 above.
 
 ### The guard's error message becomes the authoritative statement of the matrix
 
-`scripts/check-base-branch.sh:25` currently ends with:
+`scripts/check-base-branch.sh:24` currently ends with:
 
 > `Need a new prefix? Add it to the case statement in scripts/check-base-branch.sh (and to the matrix in CONTRIBUTING.md).`
 
@@ -219,26 +264,73 @@ Three sources, each for a different reason:
 
 | From | What | Why |
 |---|---|---|
-| `repo-template@v1` → `RUNNER_TEMP` | `check-base-branch.sh`, `sca-gate.sh`, `ci-aggregate-gate.sh` | Shared decision logic. Pinned, tag-protected, and **not writable by the PR author** |
+| `repo-template`, **at the ref this workflow was called at** → `RUNNER_TEMP` | `check-base-branch.sh`, `sca-gate.sh`, `ci-aggregate-gate.sh` | Shared decision logic. Pinned, tag-protected, and **not writable by the PR author** |
 | Caller, PR head → workspace | The tree gitleaks and osv-scanner scan | It is what is under review |
 | Caller, PR head | `.github/sca-policy.json` | Per-repo tier. Stays per-repo — a client-facing repo and an internal one legitimately differ |
 
-**This replaces the entire `.trusted-base` dance.** Today `checks.yml:76-98` checks out the caller's
-base branch into `.trusted-base/`, `install`s two scripts out of it into `RUNNER_TEMP`, then
+### "The ref this workflow was called at" is a specific context, and the wrong one looks right
+
+The value is **`github.job_workflow_ref`**, which holds the ref path of the *called* workflow — e.g.
+`Avenue-Z/repo-template/.github/workflows/checks.yml@refs/tags/v1.2.0`. The staging step takes
+everything after the last `@` and checks the template out at that ref.
+
+`github.workflow_ref` — the name that reads more naturally and is the one an author reaches for
+first — holds the **caller's** top-level workflow and is the wrong value here. And a literal `ref: v1`
+is worse than either: it would make §1's immutable point tags a rollback for the YAML only, with the
+gate scripts still staged from the moving `v1`. Deriving the ref from the workflow's own identity is
+what keeps `checks.yml@v1.2.0` and the scripts it runs the same version of the same thing.
+
+### The staging dance is inherited, not solved
+
+**This replaces `.trusted-base` on the consumer path.** Today `checks.yml:76-98` checks out the
+caller's base branch into `.trusted-base/`, `install`s two scripts out of it into `RUNNER_TEMP`, then
 `rm -rf .trusted-base` *before* any scanner runs — because `osv-scanner scan -r ./` walks the whole
 filesystem, and a stale copy of the base branch's manifests left in the workspace would fail the very
 PR that fixes a vulnerable dependency (`checks.yml:66-69` says exactly this).
 
-Checking out `repo-template@v1` into `RUNNER_TEMP` is strictly better on both counts:
+Changing where the staged scripts come from improves the trust root. It does **not** remove the dance:
 
 - **More trustworthy.** The trust root moves from *the caller's own mutable base branch* to *a
   protected tag in a repo the PR author may not be able to push to at all*. The current design already
   concedes its own limit — the base branch is only as trustworthy as whoever can push to it.
-- **No timing hazard.** `RUNNER_TEMP` is outside `GITHUB_WORKSPACE`, so the `rm -rf`-before-scanning
-  ordering constraint disappears rather than being re-implemented. A correctness property that
-  currently depends on step order becomes a property of where the files live.
+- **The `rm -rf`-before-scanning ordering constraint stays, and an earlier draft of this section was
+  wrong to say otherwise.** That draft reasoned that `RUNNER_TEMP` is outside `GITHUB_WORKSPACE` and
+  concluded the hazard disappears. The first half is true of `RUNNER_TEMP` and false of the step that
+  fills it: **`actions/checkout`'s `path:` is documented as a path *under* `GITHUB_WORKSPACE`**, and it
+  will not write outside it. So the shape is unchanged — check the template out into a workspace
+  subdirectory (`.trusted-template/`), `install` the three scripts into `RUNNER_TEMP`, delete the
+  subdirectory before any scanner runs — and only the *source* changes. Anyone editing that step must
+  keep the `rm -rf` ahead of the scanners for exactly the reason it is there today.
 
-### A gap this closes for free — flag as a finding, not a proven bug
+### repo-template's own runs, and the bootstrap
+
+Everything above is the **consumer** path. This repo's own `pull_request` runs must not take it, for
+two independent reasons:
+
+1. **Bootstrap.** Phase A cannot cut `v1` until `template-tests` is green, and `template-tests` cannot
+   be green if every PR's `checks` job checks out a tag that does not exist yet. Specified as
+   `@v1`-for-everyone, the first PR of Phase A is red on account of a tag that PR exists to create —
+   including the PR that would fix it.
+2. **A self-PR would be judged by the released copy of the script it is changing.** A PR that fixes
+   `check-base-branch.sh` would run the *previous* `check-base-branch.sh`, so the change under review
+   is never exercised by the run reviewing it. The one repo where that matters most is the repo that
+   owns the script.
+
+So the staging step branches on **`github.repository`**: in `Avenue-Z/repo-template` the scripts come
+from the workspace; everywhere else they come from the ref in `github.job_workflow_ref`. Inside a
+called workflow `github.repository` is the *caller's* repository, which is exactly the discriminator
+wanted, and it is documented behaviour rather than an inference about whether some other context
+happens to be empty when unset.
+
+**State the cost, because it is real.** On this repo's own PRs the guard is once again supplied by the
+PR it judges — the hole `checks.yml:60-74` exists to close, reopened on `repo-template` alone. Two
+things blunt it and neither closes it: `template-tests` runs on the same PR and `test_guard_matrix.sh`
+asserts the matrix behaviour directly, so a `check-base-branch.sh` rewritten to `exit 0` turns a
+**required** context red; and this repo is public, so the diff is visible. A PR that edits a script and
+its suite together defeats both. Recorded in `## Open items` as an accepted risk scoped to this repo,
+rather than presented as covered.
+
+### A gap this partly closes — flag as a finding, not a proven bug
 
 In the current `checks.yml`, **two of the three gate scripts are trusted-staged and the third is not**:
 
@@ -258,9 +350,24 @@ SCA gate in one line"*), and then line 227 does not apply the remedy to the thir
 **Present this to the maintainer as a finding to confirm, not as a decided bug.** It may be an accepted
 trade-off — the argument for it would be that the SCA verdict is less load-bearing than the base-branch
 guard, and that `sca-gate.sh` reads a policy file the PR also controls anyway, so staging the script
-without also staging the policy closes half a door. That argument is worth hearing before it is
-overruled. What is not in doubt is that **the §2 design closes it at zero marginal cost**: all three
-scripts come from the template, from the same protected tag, in the same step.
+without also staging the policy closes half a door.
+
+**That last argument survives the §2 design, so the honest claim is "partly closes", not "closes at
+zero marginal cost".** The script half is real and is free: all three scripts come from the template,
+from the same ref, in the same step. The policy half is not closed at all. `.github/sca-policy.json` is
+per-repo *by design* — it is the third row of the table above — so it still arrives from the PR head,
+and the tier it carries is a dial the PR can turn. `"tier": "internal"` makes `sca-gate.sh` warn-only
+in every case (`sca-gate.sh:11-12`), and the same file is the SAST dial too: `bandit-gate.sh` reads
+`.tier` from it and `internal` is warn-only there as well (`sca-gate.sh:18-20` records the sharing;
+`bandit-gate.sh:12` is the behaviour). So a PR that can no longer neuter the script can still neuter
+the verdict, by editing one JSON field instead of rewriting the script the staging was added to
+protect — a *smaller* diff than the attack §2 closes, not a larger one.
+
+Nothing in this design closes that, and both candidate remedies cost something this document has not
+priced: staging the policy from the caller's base branch reintroduces the `.trusted-base` checkout for
+a single file, and moving the tier to a repository variable puts it out of PR reach but is a new
+mechanism that has to be set by hand in 11 repos and has no fail-safe when it is unset.
+**Recorded in `## Open items`, undecided.**
 
 ### Dual triggers — a silent-failure path that must not be missed
 
@@ -290,7 +397,37 @@ repo's own check context stays literally `checks`**, because its `pull_request` 
 top-level jobs, not calls. `repo-template`'s own `avenue-z-branch-protection` ruleset keeps working
 untouched. Only *consumers* see the renamed `checks / checks`.
 
-And `init-repo.sh` must **write a caller, not keep the copy**. `test_init_repo.sh:46` inverts: instead
+### What happens to `scripts/` in a generated repo
+
+This has to be answered explicitly, because the natural reading of "the gate scripts come from the
+template now" is that generated repos stop carrying them — and that reading bricks every one of them.
+
+**`scripts/` stays, in full.** `init-repo.sh` never removed it: `:370` deletes `templates/`,
+`template-tests/` and `template-docs/` and nothing else, and `:369` says so in as many words
+("scripts/ keeps apply-rulesets.sh regardless"). The stack's own `ci.yml` invokes the local copies
+directly — `templates/python/.github/workflows/ci.yml:91` runs `scripts/bandit-gate.sh` and `:101` runs
+`scripts/ci-aggregate-gate.sh` — so until §6's `python-ci.yml` lands in Phase G, dropping `scripts/`
+would make the **required** `ci` check fail to start in all ten repos that have one. `checks.yml:257`
+does the same on this repo's own non-PR path.
+
+What does change is that two of those scripts stop being *executed* in a migrated consumer:
+`check-base-branch.sh` and `sca-gate.sh` were only ever invoked by `checks.yml`, which now stages its
+own copies. `ci-aggregate-gate.sh` keeps running from the local tree because `ci.yml` still calls it
+there, and `bandit-gate.sh` was never a `checks.yml` script at all.
+
+Two inert copies in eleven repos is precisely the drift trap this design exists to remove — someone
+edits one, nothing happens, and nothing explains why. **They are deleted once Phase E completes, not
+before.** Through Phases A–E they are the rollback path: a consumer whose migration goes wrong restores
+a self-contained `checks.yml` and its scripts are still sitting there. Once the last repo has migrated
+and the two Step 0 OPEN mechanics have actually been answered, a cleanup step removes both from every
+consumer and stops `init-repo.sh` shipping them — at which point `test_init_repo.sh:53` and `:55`
+(`assert_file "check-base-branch.sh survived"`, `assert_file "sca-gate.sh survived"`) invert. That
+cleanup is Phase E's last item and deliberately not Phase A's: it is the step that cannot be undone
+cheaply.
+
+### The caller, and what `init-repo.sh` writes
+
+`init-repo.sh` must **write a caller, not keep the copy**. `test_init_repo.sh:46` inverts: instead
 of asserting the file survived, it asserts the generated `checks.yml` **contains
 `uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1`** and **does not contain
 `workflow_call`**. The second half is the one that matters — it is the assertion that would have caught
@@ -325,15 +462,49 @@ entry is wrong the moment a repo migrates.**
 
 On the 9 private repos this is inert (established fact 2) — the ruleset cannot be applied at all on
 Free, so the JSON is a shipped artifact describing an intent, not a live control. On `data-contract`
-and `avenue-z-reporting-v2` it is live and it hangs PRs pending forever. Two consequences:
+and `avenue-z-reporting-v2` it is live and it hangs PRs pending forever.
 
-- The template's shipped `repo-ruleset.json` must be updated in the **same change** as the workflow
+**And it cannot be fixed by editing the baked-in value, because that file serves two populations at
+once.** `apply-rulesets.sh:78` copies `repo-ruleset.json` verbatim as the payload for whichever repo
+the operator is standing in, and the comment at `:85-88` states the arrangement outright — the file is
+shared by the template and by every generated repo. Under the dual-trigger design above,
+`repo-template` keeps reporting literally `checks` (its `pull_request` runs are ordinary top-level
+jobs) while every migrated consumer reports `checks / checks`. Baking in either name leaves the other
+population requiring a context that nothing reports, which does not fail those PRs — it hangs them
+PENDING FOREVER. One file cannot hold both names.
+
+**Resolution: `checks` stops being baked in and becomes file-gated, using the mechanism the script
+already has.** `apply-rulesets.sh:89-99` carries an `add_context` helper that adds `ci` and
+`template-tests` only when the workflow that reports them is actually present, for this exact reason
+("a required check with no workflow hangs every PR pending forever"). The `checks` decision joins them,
+keyed on whether the local `checks.yml` declares `workflow_call` — true in `repo-template`, false in a
+caller:
+
+```text
+checks.yml declares workflow_call  ->  require 'checks'           (repo-template itself)
+otherwise                          ->  require 'checks / checks'  (a migrated consumer)
+```
+
+One ruleset file, no new concept, and the precedent is the script's own. It is not free: the shipped
+`required_status_checks` list becomes empty, so the two suites that assert its contents move with it —
+`test_rulesets.sh:105-106` (`expected=$(printf 'checks')`, then `assert_eq`) and
+`test_apply_rulesets.sh:31` (`assert_match "'checks' is listed as required"`). Both are named in the
+Phase A checklist, in the same PR as the change that invalidates them.
+
+The alternative — keeping the required context literally `checks` everywhere by giving each caller a
+second, ordinary `checks` job that `needs:` the called one, which is the shape §6 uses to keep `ci`
+literal — is Rejected below on cost: one extra billed job per PR in eleven repos, in a design whose
+premise is that job count is the bill.
+
+Two consequences remain:
+
+- `repo-ruleset.json` **and** `apply-rulesets.sh` must change in the **same change** as the workflow
   split (Phase A), so that no future `init-repo.sh` run produces a repo whose ruleset requires a
   context its workflow cannot report — a landmine armed today and detonating whenever the org upgrades
   to Team (see Out of scope).
-- For `data-contract`, the rename and the ruleset update must land **together**, not in sequence. This
-  is called out again in §3 Phase E because it is the one migration step whose wrong ordering produces
-  an unmergeable repo rather than a confusing red check.
+- For `data-contract`, whose ruleset is live, the rename and the ruleset update **cannot be made
+  atomic at all** — a ruleset is not applied by merging a PR. That is a property of where rulesets
+  live, not a sequencing preference, and §3 Phase E carries the ordering that is actually safe.
 
 ### Two limitations to state plainly
 
@@ -348,7 +519,11 @@ and `avenue-z-reporting-v2` it is live and it hangs PRs pending forever. Two con
    `checks.yml` in a way a reviewer would notice at a glance; now it is changing `@v1` to
    `@my-branch` on one line of a nine-line file. Same hole, materially easier to miss in review.
    **`.github/` being code-owned goes from good practice to load-bearing**, and that sentence belongs
-   in `SECURITY.md`, not only here.
+   in `SECURITY.md`, not only here. Note what that requires and does not yet have: this repo ships
+   `.github/CODEOWNERS.tmpl` and only `init-repo.sh` instantiates it, so `repo-template` itself has no
+   live CODEOWNERS at all, and the shipped ruleset sets `require_code_owner_review: false`
+   (`repo-ruleset.json:28`). In both populations code ownership is today a convention, not a control.
+   Making it load-bearing is a change to make, not a fact to cite.
 
 ---
 
@@ -384,14 +559,52 @@ maintainer gets reverted on reflex, and the data is lost with it.
 
 ### Phase A checklist
 
-1. `checks.yml` → dual triggers + the §2 checkout split
+The order matters and so does the grouping. §4 gates the `v1` advance on `template-tests` passing, so
+**`template-tests` must not be red at a phase boundary** — and the §2 design invalidates six suites the
+moment it lands. Items 1–6 are therefore **one PR**: the workflow change and the assertions it
+falsifies cannot be separated without leaving the gate red in between, and a red gate at the end of
+Phase A means Phase A cannot reach its own exit criterion.
+
+1. `checks.yml` → dual triggers, the §2 checkout split, and the `github.repository` branch that keeps
+   this repo's own PRs on a workspace checkout
 2. Nine-prefix list in `check-base-branch.sh`; **fix the now-lying error message**
-3. `.github/rulesets/repo-ruleset.json` required context updated for the caller shape (see §2)
+3. `repo-ruleset.json` drops the baked-in `checks` context; `apply-rulesets.sh` gains the file-gated
+   `checks` / `checks / checks` decision (see §2)
 4. `init-repo.sh` writes a caller, not a copy
-5. `test_init_repo.sh:46` inverted — asserts `uses: …@v1` **and** asserts no `workflow_call`
-6. `v1` tag + tag ruleset + the advance workflow (§4) + immutable point tags
-7. Companion PR to `Avenue-Z/claude-marketplace` (below)
-8. `CONTRIBUTING.md` + `docs/ADOPTION.md`: governance changes require a companion marketplace PR
+5. **The suites §2 breaks, updated in the same PR as the change that breaks them.** Named individually,
+   because "update the tests" as one line is how one of six gets missed:
+   - `test_guard_matrix.sh:51-55` — hard-asserts, anchored, that the checkout carries
+     `ref: ${{ github.base_ref }}`. On the consumer path there is no base-branch checkout at all. The
+     assertion splits: the base-branch form stays asserted for the `github.repository` self-path, and
+     the consumer path asserts that the guard runs from `RUNNER_TEMP`, staged at the ref in
+     `github.job_workflow_ref`
+   - `test_sca.sh:157` — asserts the literal `rm -rf .trusted-base`. The directory is renamed
+     (`.trusted-template`), but the property worth asserting was never the name: assert that the
+     staging directory is deleted **before** anything scans the tree
+   - `test_sca.sh:145` — asserts `checks.yml` contains the literal string `scripts/sca-gate.sh`.
+     `sca-gate.sh` is now staged and invoked from `RUNNER_TEMP` like the other two; the assertion
+     follows the script, not the path it used to sit at
+   - `test_rulesets.sh:105-106` — asserts the shipped ruleset's required contexts are exactly
+     `{checks}`. Under item 3 the shipped list is empty and the contexts are added by the script
+   - `test_apply_rulesets.sh:31` — asserts `apply-rulesets.sh` prints `required: checks`. It now prints
+     one of two values depending on the local `checks.yml`. Assert **both** branches: asserting only
+     the one that happens to hold in this repo is how the consumer branch ships untested
+   - `test_init_repo.sh:46` — inverted: asserts the generated `checks.yml` **contains
+     `uses: …/checks.yml@v1`** and **does not contain `workflow_call`**. The second half is the one
+     that matters — it is the assertion that would have caught §2's silent-failure path, and it is
+     worthless if only the first half is written
+   - `test_checks_verdict.sh` — not known to break, and read rather than assumed before the PR opens:
+     it asserts the verdict wiring that item 1 moves
+6. Layer 2, the self-call, added as a job **inside `template-tests.yml`** (§4) — so that "the workflow
+   is callable" sits in the run the advance chains off
+7. **`v1` cut, by hand, once 1–6 are green** — plus the tag ruleset with its GitHub Actions bypass
+   actor (§1), the advance workflow (§4), and `v1.0.0`. This is the one time a human touches the tag,
+   and it is manual because there is nothing for the advance workflow to move yet
+8. Companion PR to `Avenue-Z/claude-marketplace` (below)
+9. `CONTRIBUTING.md` + `docs/ADOPTION.md`: governance changes require a companion marketplace PR
+
+What is deliberately **not** here: deleting the now-inert `check-base-branch.sh` / `sca-gate.sh` from
+generated repos. That is Phase E's last item — see §2.
 
 ### Phase E specifics
 
@@ -401,10 +614,31 @@ maintainer gets reverted on reflex, and the data is lost with it.
   real findings.** That is the gate working, and it is also exactly how a migration acquires a
   reputation for breaking things. **Warn its owner before opening the PR**, and treat the first red as
   the start of a conversation about the tier rather than as a migration defect.
-- **`data-contract` is public with an active ruleset.** The `checks` → `checks / checks` rename must
-  land **in the same change** as the ruleset update. In either order as separate PRs, there is a
-  window in which the required context cannot be reported and **every PR in the repo hangs pending
-  forever** — including the PR that would fix it.
+- **`data-contract` is public with an active ruleset, and the rename cannot be made atomic.** An
+  earlier draft of this section required the rename and the ruleset update to "land in the same
+  change". They cannot: **a ruleset is not applied by merging a PR.** `apply-rulesets.sh` is run out of
+  band, by a person, against the GitHub API (`:148` is the `PUT`, `:152` the `POST`), so no single
+  change contains both halves. The safe ordering is a sequence, and it is this one:
+
+  1. **Drop the required context first**, while `checks` is still reporting — `PUT` the ruleset with an
+     empty `required_status_checks` list. This is a hand-run `gh api` call, not
+     `./scripts/apply-rulesets.sh`: with §2's file-gating the script always adds one of the two
+     contexts, and mid-migration neither is correct.
+  2. **Merge the caller PR.** `checks` stops reporting; `checks / checks` starts.
+  3. **Re-add the context**, now `checks / checks`. From here `./scripts/apply-rulesets.sh` does the
+     right thing unaided, because the local `checks.yml` is a caller.
+
+  **Name the window: between steps 1 and 3, `main`/`staging`/`dev` in `data-contract` require no status
+  check at all.** The rest of the ruleset — the pull-request requirement, `non_fast_forward`,
+  `deletion` — stays in force, so this is "a PR can merge with a red or absent gate", not "anyone can
+  push to `main`". Do it in one sitting, when nobody else is merging, and do not start step 1 unless
+  step 3 will finish the same day.
+
+  There is a zero-window variant, priced and not chosen: land the caller as a **second** workflow file
+  alongside the existing `checks.yml` so both contexts report at once, require both, then delete the
+  old workflow and drop its context. It costs one extra billed job per PR for the length of the
+  overlap — affordable on one repo, and the right call if step 3 cannot be guaranteed to happen
+  promptly.
 
 ### The marketplace dependency
 
@@ -441,8 +675,8 @@ an automated fleet-wide deploy of the security gates.** Four layers, of which th
 
 | Layer | Proves | Status |
 |---|---|---|
-| 1. Unit (bash) | The gate scripts make the right decisions | **Exists** — 17 suites, incl. `test_guard_matrix.sh`, `test_checks_verdict.sh` |
-| 2. Wiring (self-call) | The workflow is callable at all; the happy path is green | **New** — mirror `data-contract`'s `gate-selftest.yml` |
+| 1. Unit (bash) | The gate scripts make the right decisions | **Exists** — 16 suites, incl. `test_guard_matrix.sh`, `test_checks_verdict.sh` |
+| 2. Wiring (self-call) | The workflow is callable at all; the happy path is green | **New** — a job *inside* `template-tests.yml`, mirroring `data-contract`'s `gate-selftest.yml` |
 | 3. Contract (tripwire) | The consumer-visible surface has not moved | **New** — below |
 | 4. Consumer (real) | Cross-repo `@v1` resolution; a failing gate turns the *caller* red | **Phase B only** |
 
@@ -452,6 +686,19 @@ Layer 2 inherits a constraint: **`continue-on-error` is forbidden on a `uses:` j
 5). A self-call cannot therefore assert "this job failed and that is fine" the way an ordinary step
 can. The self-test is a *happy-path* test by construction, and pretending otherwise is how
 `gate-selftest.yml` learned this in the first place.
+
+**Layer 2 has to live inside `template-tests.yml`, not beside it.** The advance chains off the
+`template-tests` *workflow run* (below), so a self-call published as its own workflow would gate
+nothing: `v1` could advance carrying a reusable workflow that is not callable at all, which is the one
+failure this layer exists to catch. Making it a job of `template-tests.yml` puts its result inside the
+run whose `conclusion` the advance reads, and costs no new wiring.
+
+The job is gated to pushes (`if: github.event_name == 'push'`) rather than running on every PR. That is
+a cost decision — one extra billed job per push instead of one per PR — and it should be honest about
+what it buys: on a `push` event the called workflow takes its non-PR path, so the self-call proves the
+workflow **resolves, expands and runs green**, and does not exercise the base-branch guard or the
+PR-scoped secret scan. Layer 1 covers those. `if:` is permitted on a `uses:` job even though
+`continue-on-error` is not — the same constraint from established fact 5, seen from the other side.
 
 ### The tripwire is the key new piece
 
@@ -493,17 +740,65 @@ permissions:
   contents: write
 ```
 
-Guarded by `if: github.event.workflow_run.conclusion == 'success'`, then:
+Guarded by `if: github.event.workflow_run.conclusion == 'success'`. Two mechanics inside it are easy to
+get wrong and silent when wrong.
 
-- **If `.github/reusable-contract.json` changed in this push → refuse to advance `v1`** and print
-  *"breaking change — cut v2 manually."* The automation's response to an intentional break is to stop,
-  not to guess.
-- **Otherwise** move `v1` and cut the next `v1.N.0`.
+**It must check out the commit that was actually tested.** A `workflow_run`-triggered run does not
+default to the commit that triggered the upstream workflow: GitHub documents `GITHUB_SHA` for
+`workflow_run` as the last commit on the **default branch**, and `GITHUB_REF` as the default branch
+itself. Two merges in quick succession therefore put the second one's tip in the workspace while the
+first one's result is what succeeded — and `v1` would be tagged onto a commit `template-tests` never
+ran against. The checkout is explicit about it:
+
+```yaml
+- uses: actions/checkout@<pinned>
+  with:
+    ref: ${{ github.event.workflow_run.head_sha }}
+    fetch-depth: 0
+```
+
+`fetch-depth: 0` is not decoration; the next mechanic needs history and tags.
+
+**"Files changed in this push" has no source in the payload, and the obvious substitute is not
+sticky.** The `workflow_run` payload carries `head_sha` and `head_commit` but **no commit list and no
+changed-file set**, so "did `.github/reusable-contract.json` change in this push?" has to be computed
+rather than read. Computing it against the *previous commit* is both unavailable here and wrong on its
+own terms, because the refusal would be **one-shot**: a breaking commit lands and the tripwire refuses;
+the next unrelated push touches nothing in the contract file, passes, and advances `v1` **straight past
+the breaking commit**. The refusal would protect exactly one push and then evaporate.
+
+So the comparison is against **what `v1` currently points at** — the only base that makes the refusal
+persist:
+
+```bash
+git fetch --tags --force
+base="$(git rev-parse -q --verify refs/tags/v1^{commit})" || refuse "v1 does not resolve"
+changed="$(git diff --name-only "${base}" "${GITHUB_SHA}" -- .github/reusable-contract.json)"
+```
+
+- `changed` non-empty → **refuse to advance**, printing *"the consumer contract has changed since
+  `v1` — cut `v2`, or acknowledge this as additive."* Because the base does not move until `v1` does,
+  the refusal now holds across every subsequent push until a human acts.
+- `changed` empty → move `v1` to `GITHUB_SHA` and cut the next `v1.N.0`.
+- **The comparison cannot be made** — `v1` does not resolve, the fetch failed, `git diff` errored →
+  **refuse, loudly.** "I could not tell" is not "nothing changed", which is the same posture
+  `apply-rulesets.sh:57-62` takes toward a plan lookup it cannot perform.
+
+**The acknowledgement path, which §1 clause 2 requires.** §1 calls a new input **with a default**
+backward-compatible, but the tripwire is an exact match on the golden file, so an additive input moves
+that file and lands in the refusal branch above. With no way out, the design would declare additive
+changes non-breaking and then behave as though they were not. The `workflow_dispatch` above is the way
+out: a maintainer re-runs the advance naming the SHA, and it moves `v1` and cuts the point tag on the
+normal path with the contract comparison skipped. Both properties that mattered survive — **the tag is
+still moved by the workflow, never by a person at a keyboard**, and a human still has to state in the
+open that the surface moved. The only thing that changes is that the answer to "the surface moved" can
+be *"yes, additively"* as well as *"cut v2"*.
 
 `contents: write` is the only elevated permission anywhere in this design, and it exists solely to move
 a tag. That is the argument for the tag ruleset in §1 being applied in the same change: the workflow
-holding this token is the *only* thing that should be able to move `v1`, and a ruleset is what makes
-that true rather than merely intended.
+holding this token is the *only* thing that should be able to move `v1`, and a ruleset — with the
+GitHub Actions bypass actor that lets this workflow through and nobody else — is what makes that true
+rather than merely intended.
 
 ### Uncovered by construction
 
@@ -516,6 +811,21 @@ uncovered again until someone happens to write a bad PR.
 A standing canary repo calling `@v1` on a schedule would close it continuously. It is an optional
 follow-on, explicitly **not** a launch blocker, and it costs billed minutes in a design whose premise
 is that billed minutes are scarce.
+
+**§1's clause-3 breaks are uncovered too, and by a wider margin.** A new failure condition unrelated to
+the caller's own content — tightening the default SCA tier is the canonical example — moves no job
+name, adds no input and edits no golden file. It passes layers 1, 2 and 3 with nothing to say, and `v1`
+carries it to eleven repos on the next push to `main`. Layer 1 would catch it only if someone had also
+written the test that pins the *old* behaviour as required, which is exactly the
+discipline-in-one-maintainer's-head control this repo's ShellCheck spec refuses to rely on — and the
+control the tripwire was built to replace for clauses 1 and 2.
+
+Nothing here catches it, and building something that would — a golden file over gate *behaviour* rather
+than gate *surface* — is a larger piece of work than this design contains. It is therefore a **named
+accepted risk**, recorded in `## Open items`, with the only two things that genuinely reduce it stated
+as what they are and no more: the `dev → staging → main` flow gives such a change a soak on two
+branches before it reaches the tag, and §1's three clauses are written down, so "is this clause 3?" is
+a question with an answer rather than a matter of taste.
 
 ---
 
@@ -537,9 +847,31 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
-**Never cancel on `dev`/`staging`/`main`.** A cancelled run reports `cancelled`, not `success`, and on
-Team that becomes a merge blocker — the same "a check that does not report `success` is not a pass"
-rule `ci-aggregate-gate.sh` applies deliberately, arriving from an unwanted direction.
+**Never cancel on `dev`/`staging`/`main` — and `cancel-in-progress: false` is not enough to guarantee
+that.** A cancelled run reports `cancelled`, not `success`, and on Team that becomes a merge blocker —
+the same "a check that does not report `success` is not a pass" rule `ci-aggregate-gate.sh` applies
+deliberately, arriving from an unwanted direction.
+
+The trap is that `cancel-in-progress` governs only runs that are already *in progress*. GitHub's
+documented behaviour is that when a run enters a concurrency group, any **pending** run already queued
+in that group is cancelled regardless of the flag. Two pushes to `dev` in quick succession, with the
+first still queued behind a busy runner pool, therefore still produce a `cancelled` conclusion under
+the form above — which is precisely the merge blocker this section claims to avoid.
+
+The fix is to keep branch pushes out of a shared group at all, so there is never a pending run to
+cancel, rather than to ask the group not to cancel one:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+On `pull_request` the group is the ref and superseded runs are cancelled, which is the behaviour that
+was wanted. On a push the group is the commit SHA, so every push is alone in its group and neither the
+in-progress nor the pending rule can reach it. This follows from the documented semantics — a
+concurrency rule only ever affects runs that share a group — and it has **not** been measured here;
+the Phase B run that answers everything else should watch for a `cancelled` conclusion on `dev`.
 
 ### The real lever is fewer jobs per run
 
@@ -630,9 +962,11 @@ interim fix becomes optional**: the job-count reduction is ported into callers o
 
 Recorded as open, not as decided:
 
-1. **The two unverified mechanics** (see Step 0): private→public reusable-workflow **execution**, and
-   `actions/checkout` resolution inside a called workflow. Both are Phase B's job. The design is
-   written as though the documented behaviour holds; if it does not, §2 is the section that changes.
+1. **The three unverified mechanics** (see Step 0): private→public reusable-workflow **execution**,
+   `actions/checkout` resolution inside a called workflow, and whether a consumer's default
+   `GITHUB_TOKEN` can check out `Avenue-Z/repo-template` at all. All three are Phase B's job. The
+   design is written as though the documented behaviour holds; if it does not, §2 is the section that
+   changes.
 2. **Hand-porting `checks.yml` to `client-satisfaction-report` for early relief — deliberately
    deferred.** Billing is blocked, so the meter is not currently running and the urgency is
    artificial. Phase B will measure the real per-job duration on a large tree and therefore the real
@@ -643,7 +977,36 @@ Recorded as open, not as decided:
    ~66% to ~33%.** Phase B settles this. **Do not quote a savings figure for `checks.yml` as
    established** until it does — the 54 figure is a measurement of this repo, not of the fleet.
 4. **The `sca-gate.sh` staging gap** (§2) — flagged as a finding for the maintainer to confirm or
-   accept, though the §2 design closes it either way.
+   accept. The §2 design closes the *script* half of it either way.
+5. **The `.github/sca-policy.json` half, which §2 does not close** (§2). The gate scripts move to a
+   trusted ref; the tier dial they read does not. It is a one-line edit in the PR's own head that turns
+   the SCA verdict — and the SAST verdict, which shares the file — warn-only. Two candidate remedies,
+   neither priced: stage the policy from the caller's base branch (reintroduces `.trusted-base` for a
+   single file), or move the tier to a repository variable (out of PR reach, but a new mechanism to set
+   by hand in 11 repos, with no fail-safe when unset). **Undecided.**
+6. **`repo-template`'s own PRs supply the scripts that judge them** (§2). The deliberate consequence of
+   keeping this repo's `pull_request` runs on a workspace checkout, so that a PR changing a gate script
+   is actually exercised by the run reviewing it. `template-tests` is the compensating control and a PR
+   that edits a script and its suite together defeats it; code ownership is not available as a second
+   control, because this repo has no live `.github/CODEOWNERS` and the shipped ruleset sets
+   `require_code_owner_review: false`. **Accepted risk, scoped to this repo.**
+7. **Clause-3 breaks reach the fleet ungated** (§1, §4). A behaviour change that alters no declared
+   surface passes all three gating layers and auto-deploys on the next push to `main`. No mechanism
+   here catches it. **Accepted risk**, reduced only by the `dev → staging → main` soak and by §1's
+   clauses being written down.
+8. **The `v1` tag bypass is repo-scoped, not workflow-scoped** (§1). Adding the GitHub Actions app to
+   the tag ruleset's `bypass_actors` means any workflow in `repo-template` requesting `contents: write`
+   can move `v1`, not only the advance workflow. There would be exactly one such workflow, and adding a
+   second is a change to `.github/` on a PR. **Accepted** — and worth re-reading the moment
+   `.github/workflows/` grows a second writer.
+9. **Two inert scripts in every migrated consumer, until Phase E's cleanup** (§2).
+   `check-base-branch.sh` and `sca-gate.sh` keep shipping through Phase E as the rollback path. Until
+   they are deleted, editing either has no effect and produces no error — the drift trap this design
+   exists to remove, deliberately kept for the length of the migration. **Time-boxed, not permanent.**
+10. **Whether the `data-contract` cutover takes the windowed or the overlap ordering** (§3 Phase E).
+    The windowed one leaves `main`/`staging`/`dev` without a required status check between two
+    out-of-band ruleset edits; the overlap one costs an extra billed job per PR while both workflows
+    report. **Decide when the cutover is scheduled, on who is available to finish it the same day.**
 
 ---
 
@@ -665,8 +1028,20 @@ Recorded as open, not as decided:
 - **`paths-ignore` on docs-only pushes.** Real savings on Free; on Team a path-filtered required check
   hangs every PR pending forever. See §5.
 - **Keeping the `.trusted-base` checkout alongside the template checkout.** Once all three gate scripts
-  come from `@v1`, the base-branch copy has nothing left to supply, and retaining it would keep the
-  `rm -rf`-before-scanning ordering hazard for no benefit.
+  come from the called workflow's own ref, the base-branch copy has nothing left to supply. It would
+  not buy back the `rm -rf`-before-scanning ordering constraint either — that is inherited by the
+  template checkout, because `actions/checkout` can only write under `GITHUB_WORKSPACE` (§2).
+- **A second, ordinary `checks` job in every caller, to keep the required context literally `checks`.**
+  It is §6's shape, and it would delete the rename problem outright — including Phase E's unprotected
+  window and the Team-upgrade landmine below. One extra billed job per PR across eleven repos is too
+  much to pay for it in a design whose premise is that job count is the bill. Recorded rather than
+  dropped, because it is the right answer if the org ever leaves Free. See §2.
+- **A PAT or a dedicated GitHub App to move the `v1` tag.** Tighter than bypassing the tag ruleset for
+  the GitHub Actions app, and it costs a long-lived credential to store and rotate in a repo that today
+  needs none (established fact 3). See §1.
+- **Splitting `repo-ruleset.json` into one file per population.** It would duplicate the ruleset's
+  other four rules and create a second drift surface — the thing this design exists to remove. The
+  file-gated `add_context` in §2 reaches the same place with one file and the script's own precedent.
 - **Advancing `v1` by hand.** A human-moved tag is a human-forgotten tag, and the failure is silent:
   the fleet simply stops receiving fixes, with no red check anywhere to say so.
 

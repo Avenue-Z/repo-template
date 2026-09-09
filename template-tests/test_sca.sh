@@ -152,9 +152,9 @@ assert_match "checks.yml is read-only (permissions: contents: read)" 'contents:[
 assert_match "the sca step carries id: sca"            'id: sca'                    "$wf"
 assert_match "the verdict reads that step's outcome"   'steps\.sca\.outcome'       "$wf"
 assert_match "the verdict names sca as a gate"         'sca:\$\{SCA_RESULT\}'      "$wf"
-# osv-scanner walks the filesystem. If the base-branch checkout were left in the workspace it
+# osv-scanner walks the filesystem. If the template checkout were left in the workspace it
 # would be scanned too, and a PR that FIXES a vulnerable dependency would still fail on the old
-# manifest sitting in .trusted-base.
+# manifest sitting in .trusted-template.
 # The name of the directory is not the property worth asserting; the ORDER is. Assert that the
 # staging directory is deleted, and that the deletion appears BEFORE the first scanner step.
 assert_match "the template checkout is removed from the workspace" 'rm -rf \.trusted-template' "$wf"

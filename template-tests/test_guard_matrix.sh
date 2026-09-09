@@ -81,9 +81,10 @@ wf="$(cat "$WORKFLOW")"
 # from it would stage a consumer's own tree. The former is this called workflow's ref path, e.g.
 # Avenue-Z/repo-template/.github/workflows/checks.yml@refs/tags/v1.2.0 — which is also what makes the
 # immutable point tags an actual rollback rather than a rollback of the YAML only.
-assert_match "the script ref comes from github.job_workflow_ref" 'github\.job_workflow_ref' "$wf"
+assert_match "the script ref comes from github.job_workflow_ref" \
+  '\$\{\{ *github\.job_workflow_ref *\}\}' "$wf"
 assert_nomatch "the script ref is NOT taken from github.workflow_ref (that is the caller's)" \
-  'github\.workflow_ref' "$wf"
+  '\$\{\{ *github\.workflow_ref *\}\}' "$wf"
 # A hardcoded tag would defeat the point tags exactly as silently: checks.yml@v1.2.0 would execute
 # scripts staged from the moving v1.
 assert_nomatch "the template checkout does not hardcode a tag" 'ref: *v1 *$' "$wf"
@@ -102,9 +103,9 @@ if grep -A1 '^jobs:' "$WORKFLOW" | tail -1 | grep -q '^  checks:$'; then
 else
   fail "jobs key must be literally 'checks' (the ruleset requires that exact context)"
 fi
-# The guard must still actually RUN, and from the trusted copy staged out of the base checkout.
-# Pointing it at scripts/check-base-branch.sh in the workspace would silently hand the PR back
-# the script that judges it — the exact hole the base checkout above exists to close.
+# The guard must still actually RUN, and from the trusted copy staged out of the template
+# checkout. Pointing it at scripts/check-base-branch.sh in the workspace would silently hand the
+# PR back the script that judges it — the exact hole the template checkout above exists to close.
 if grep -qE '\$\{RUNNER_TEMP\}/trusted-scripts/check-base-branch\.sh" "\$\{HEAD_REF\}" "\$\{BASE_REF\}"' "$WORKFLOW"; then
   pass "the guard runs the trusted (base-branch) copy of check-base-branch.sh"
 else

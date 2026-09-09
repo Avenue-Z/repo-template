@@ -94,11 +94,10 @@ jobs:
       #
       #   a CONSUMER -> the template, at the ref THIS WORKFLOW WAS CALLED AT. That is
       #                 github.job_workflow_ref (e.g. Avenue-Z/repo-template/.github/workflows/
-      #                 checks.yml@refs/tags/v1.2.0), NOT the caller's own workflow-ref context
-      #                 field, which describes the CALLER's workflow and would stage the
-      #                 consumer's own tree straight back into the job. Deriving it rather than
-      #                 hardcoding `ref: v1` is what makes the immutable point tags a real
-      #                 rollback: pinned to @v1.2.0, you get v1.2.0's scripts.
+      #                 checks.yml@refs/tags/v1.2.0), NOT github.workflow_ref, which is the CALLER's
+      #                 workflow and would stage the consumer's own tree straight back into the job.
+      #                 Deriving it rather than hardcoding `ref: v1` is what makes the immutable point
+      #                 tags a real rollback: pinned to @v1.2.0, you get v1.2.0's scripts.
       #
       #   repo-template ITSELF -> the workspace. Two reasons, both decisive. Bootstrap: this repo's
       #                 PRs cannot check out a tag that Phase A has not cut yet, or the PR that cuts

@@ -1,0 +1,107 @@
+name: advance-v1
+
+# MOVES THE v1 TAG. Eleven repos call Avenue-Z/repo-template/.github/workflows/checks.yml@v1 as their
+# only security gate, so this workflow is an automated fleet-wide deploy. It is deliberately the ONLY
+# thing that moves the tag: a human-moved tag is a human-forgotten tag, and that failure is silent —
+# the fleet just stops receiving fixes, with no red check anywhere to say so.
+#
+# THIS FILE IS TEMPLATE-ONLY. scripts/init-repo.sh deletes it; a generated repo has no business
+# carrying a workflow that force-moves a tag. test_init_repo.sh asserts the removal.
+
+on:
+  # Chains off the RESULT of template-tests rather than re-running the suite. That run includes the
+  # self-call job, so "the reusable workflow is callable" gates the tag too.
+  workflow_run:
+    workflows: [template-tests]
+    types: [completed]
+    branches: [main]
+  # The way out for a change that moves the golden contract file but is backward-compatible — a new
+  # input WITH a default. The tag is still moved by this workflow, never by a person at a keyboard;
+  # what a human supplies is the acknowledgement, in the open, that the surface moved and it was
+  # additive.
+  workflow_dispatch:
+    inputs:
+      acknowledge-contract-change:
+        description: 'SHA on main to advance v1 to, for an ADDITIVE contract change'
+        required: true
+
+# The only elevated permission in this design, and it exists solely to move a tag. The v1 tag ruleset
+# carries the GitHub Actions app as its one bypass actor, or this write is refused by the ruleset
+# regardless of the token's permissions.
+permissions:
+  contents: write
+
+jobs:
+  advance:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      # A workflow_run-triggered run resolves GITHUB_SHA to the LAST COMMIT ON THE DEFAULT BRANCH, not
+      # to the commit that triggered the upstream workflow. Two merges in quick succession would put
+      # the second one's tip in the workspace while the FIRST one's result is what succeeded — and v1
+      # would be moved onto a commit template-tests never ran against. Pin it explicitly.
+      # fetch-depth: 0 is not decoration: the decision below needs history and tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.acknowledge-contract-change || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: decide whether v1 may advance
+        id: decide
+        env:
+          ACKNOWLEDGED: ${{ github.event_name == 'workflow_dispatch' }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.acknowledge-contract-change || github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force >/dev/null 2>&1 || {
+            echo "::error::could not fetch tags — refusing to advance v1"; exit 1; }
+
+          if [ "${ACKNOWLEDGED}" = "true" ]; then
+            echo "::notice::contract change acknowledged by hand — skipping the tripwire comparison"
+            echo "advance=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # THE COMPARISON BASE IS WHAT v1 POINTS AT, not the previous commit, and that is the whole
+          # design. Against the previous commit the refusal would be ONE-SHOT: a breaking commit lands
+          # and this refuses; the next unrelated push touches nothing in the contract file, passes, and
+          # advances v1 STRAIGHT PAST the breaking commit. Against v1 the base does not move until v1
+          # does, so the refusal holds until a human acts.
+          #
+          # The workflow_run payload carries head_sha and head_commit but NO commit list and NO
+          # changed-file set, so there is nothing to read here — it has to be computed.
+          base="$(git rev-parse -q --verify 'refs/tags/v1^{commit}')" || {
+            echo "::error::v1 does not resolve. It is cut BY HAND once, in Phase A; after that this workflow owns it. Refusing to guess a base."; exit 1; }
+
+          changed="$(git diff --name-only "${base}" "${TARGET_SHA}" -- .github/reusable-contract.json)" || {
+            echo "::error::could not diff ${base}..${TARGET_SHA} — refusing to advance v1"; exit 1; }
+
+          if [ -n "${changed}" ]; then
+            echo "::error::.github/reusable-contract.json has changed since v1 — the consumer-visible surface moved."
+            echo "Cut v2 by hand if this is a break (a renamed job, a required input, or a new failure"
+            echo "condition unrelated to the caller's own content). If it is ADDITIVE — a new input WITH"
+            echo "a default — re-run this workflow via workflow_dispatch naming the SHA."
+            exit 1
+          fi
+          echo "advance=true" >> "${GITHUB_OUTPUT}"
+
+      - name: move v1 and cut the next point tag
+        if: steps.decide.outputs.advance == 'true'
+        env:
+          TARGET_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.acknowledge-contract-change || github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The immutable point tag is the ONLY thing that makes "pin to the last good version" a
+          # sentence with an argument. Without it the previous v1 is gone and a consumer would have to
+          # pin to a SHA dug out of the reflog — in practice they delete the caller and lose the gate.
+          last="$(git tag -l 'v1.*.0' | sed -E 's/^v1\.([0-9]+)\.0$/\1/' | grep -E '^[0-9]+$' | sort -n | tail -1 || true)"
+          next="v1.$(( ${last:-0} + 1 )).0"
+          git tag -a "${next}" "${TARGET_SHA}" -m "checks.yml reusable workflow ${next}"
+          git push origin "refs/tags/${next}"
+
+          git tag -f v1 "${TARGET_SHA}"
+          git push --force origin refs/tags/v1
+          echo "::notice::v1 -> ${TARGET_SHA} (also cut ${next})"

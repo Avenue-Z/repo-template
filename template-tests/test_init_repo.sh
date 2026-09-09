@@ -43,7 +43,24 @@ assert_no_file "the template's own test_sca.sh did not ship (it lives in templat
 # that repo's required checks, it would never report and hang every PR PENDING FOREVER.
 assert_no_file "template-tests.yml workflow removed (it runs a suite that no longer exists here)" .github/workflows/template-tests.yml
 # The workflows a generated repo SHOULD keep must survive the cull.
-assert_file    "checks.yml survived (core workflow, ships into generated repos)" .github/workflows/checks.yml
+# checks.yml SURVIVES, but INVERTED: a generated repo gets a nine-line CALLER, not a copy of the
+# 260-line gate. The copy is what froze 11 repos on the version they were born with.
+assert_file "checks.yml is present (as a caller)" .github/workflows/checks.yml
+gen_checks="$(cat .github/workflows/checks.yml)"
+assert_match "the generated checks.yml calls the template's reusable workflow" \
+  'uses: Avenue-Z/repo-template/\.github/workflows/checks\.yml@v1' "$gen_checks"
+# THE HALF THAT MATTERS. If init-repo.sh ever goes back to copying the file, the copy would carry
+# `on: workflow_call` — and a workflow whose ONLY trigger is workflow_call never runs in the repo it
+# sits in. It would enforce nothing, emit no error, and show an empty Actions tab. Asserting only
+# that the file exists is what would let that ship green.
+assert_nomatch "the generated checks.yml is NOT a copy of the reusable workflow" \
+  'workflow_call' "$gen_checks"
+assert_match "the caller still declares its own triggers (they cannot be inherited)" \
+  'pull_request' "$gen_checks"
+# Template-only artifacts must not ship. reusable-contract.json is the template's own golden file and
+# advance-v1.yml force-moves a tag; neither has any business in a generated repo.
+assert_no_file "the golden contract file did not ship" .github/reusable-contract.json
+assert_no_file "the v1 advance workflow did not ship" .github/workflows/advance-v1.yml
 # The three workflows checks.yml replaced must be GONE, not merely unreferenced. A generated repo
 # that shipped both would pay for the jobs twice over — the whole point of the merge — and would
 # report contexts the ruleset no longer requires.

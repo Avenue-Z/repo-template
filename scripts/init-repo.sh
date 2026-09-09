@@ -375,6 +375,43 @@ rm -rf templates template-tests template-docs
 rm -f .github/workflows/template-tests.yml
 info "removed templates/, template-tests/, template-docs/ and the self-tests workflow"
 
+# A GENERATED REPO GETS A CALLER, NOT A COPY. Copying checks.yml is what froze 11 repos on the
+# version they were born with: improving the gate here improved nothing anywhere else, because there
+# was no channel. The caller is nine lines and it tracks the moving v1 tag.
+#
+# The triggers live HERE and not in the reusable workflow, because a workflow_call workflow cannot
+# define `on:` for its consumers. That is inherent to the mechanism: the DECISIONS propagate, the
+# TRIGGERING does not. Changing the audit schedule later is a PR per repo.
+#
+# No `with:` and no `secrets: inherit`: checks.yml declares no inputs and needs no secrets (it
+# installs gitleaks from a checksummed release tarball rather than using gitleaks-action).
+cat > .github/workflows/checks.yml <<'CALLER'
+name: checks
+on:
+  # `edited` is load-bearing: a PR retargeted at a new base must be re-judged, and it is the only
+  # event that fires on a base change.
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  # The weekly repo-wide audit. gitleaks scans full history here, and an advisory published overnight
+  # makes yesterday's clean dependency tree dirty without anything in the tree changing.
+  schedule:
+    - cron: '0 6 * * 1'
+permissions:
+  contents: read
+jobs:
+  # THIS JOB KEY IS THE STATUS-CHECK CONTEXT. A called job reports as `<caller-job> / <called-job>`,
+  # so this reports `checks / checks`, and scripts/apply-rulesets.sh requires exactly that string.
+  # Renaming this job renames the check — and a required check that no longer reports does not fail
+  # a PR, it hangs it PENDING FOREVER.
+  checks:
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1
+CALLER
+info "wrote .github/workflows/checks.yml as a caller of repo-template@v1"
+
+# Template-only artifacts. reusable-contract.json is the golden surface file that gates the v1 tag,
+# and advance-v1.yml force-moves that tag — a generated repo has no business carrying either.
+rm -f .github/reusable-contract.json .github/workflows/advance-v1.yml
+
 # The front door is template-only. README.md is the TEMPLATE's GitHub landing page; the seed a
 # generated repo starts from lives in README.repo.tmpl — a .tmpl suffix so GitHub renders the front
 # door and not the seed, the same reason CODEOWNERS.tmpl is not named CODEOWNERS. Swap the seed in

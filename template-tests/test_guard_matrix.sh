@@ -67,21 +67,30 @@ assert_match "the guard points at a PR against the template" 'Avenue-Z/repo-temp
 assert_match "the guard's own output lists the full matrix" \
   'perf/.*refactor/.*test/' "$msg"
 
-echo "guard-base-branch: the guard's logic must come from the BASE branch, not the PR it judges"
-# The workflow runs on pull_request, so a default checkout gives it the PR HEAD's tree — which
-# means the PR supplies the very script that judges it. A PR from wip/x -> main that also
-# rewrites check-base-branch.sh to `exit 0` would pass its own guard, and with
-# required_approving_review_count: 0 nobody has to look at it. Checking out github.base_ref
-# takes the script from the protected branch instead.
+echo "guard-base-branch: the guard's logic must not be supplied by the PR it judges"
+# The workflow runs on pull_request, so a default checkout gives it the PR HEAD's tree — which means
+# the PR supplies the very script that judges it. A PR from wip/x -> main that also rewrote
+# check-base-branch.sh to `exit 0` would pass its own guard, and with
+# required_approving_review_count: 0 nobody has to look at it.
+#
+# The base-branch checkout that used to close this is GONE: on the consumer path there is no base
+# branch worth trusting, and the scripts now come from the TEMPLATE at the ref this workflow was
+# called at. See the spec, §2.
 wf="$(cat "$WORKFLOW")"
-# Anchored, and NOT via assert_match: that helper greps case-insensitively, and the step's own
-# `BASE_REF: ${{ github.base_ref }}` env line matches a loose /ref: .../ pattern — which would
-# make this assertion pass with a default checkout. It must match the checkout's `ref:` input.
-if grep -qE '^ +ref: \$\{\{ *github\.base_ref *\}\}$' "$WORKFLOW"; then
-  pass "actions/checkout takes ref: github.base_ref (guard logic comes from the protected branch)"
-else
-  fail "actions/checkout must set 'ref: \${{ github.base_ref }}' — otherwise the PR supplies the script that judges it"
-fi
+# job_workflow_ref, NOT workflow_ref. The latter is the CALLER's workflow and resolving the scripts
+# from it would stage a consumer's own tree. The former is this called workflow's ref path, e.g.
+# Avenue-Z/repo-template/.github/workflows/checks.yml@refs/tags/v1.2.0 — which is also what makes the
+# immutable point tags an actual rollback rather than a rollback of the YAML only.
+assert_match "the script ref comes from github.job_workflow_ref" 'github\.job_workflow_ref' "$wf"
+assert_nomatch "the script ref is NOT taken from github.workflow_ref (that is the caller's)" \
+  'github\.workflow_ref' "$wf"
+# A hardcoded tag would defeat the point tags exactly as silently: checks.yml@v1.2.0 would execute
+# scripts staged from the moving v1.
+assert_nomatch "the template checkout does not hardcode a tag" 'ref: *v1 *$' "$wf"
+# repo-template's own PRs take the workspace copy instead, so a PR that CHANGES a gate script is
+# exercised by the run reviewing it, and so that Phase A's first PR is not red on a tag Phase A
+# exists to cut.
+assert_match "the staging step branches on the caller's repository" 'Avenue-Z/repo-template' "$wf"
 assert_match "declares a read-only permissions block" 'contents: *read' "$wf"
 
 echo "guard-base-branch: it is a step of the merged 'checks' job"

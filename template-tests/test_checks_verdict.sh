@@ -85,8 +85,14 @@ verdict "a manual dispatch behaves like the audit"  0 workflow_dispatch skipped 
 # own tree, a PR could rewrite ci-aggregate-gate.sh to `exit 0` and switch off the guard, the
 # secret scan and the SCA gate in one line — re-opening the exact hole the base checkout exists
 # to close. So a missing trusted copy must refuse to report, never fall back to the PR's copy.
-echo "checks verdict: a PR with no trusted verdict script must refuse, not fall back"
+# The verdict logic MUST come from the trusted staging directory on EVERY event. If it came from the
+# workspace, a PR could rewrite ci-aggregate-gate.sh to `exit 0` and switch off the guard, the secret
+# scan and the SCA gate in one line. And the workspace copy is not a safe fallback in a CONSUMER
+# either: Phase E's cleanup deletes it, so a workspace fallback would break the weekly scheduled audit
+# months later, in a repo nobody is watching. A missing trusted copy must refuse to report a verdict.
+echo "checks verdict: a missing trusted verdict script must refuse on every event, never fall back"
 rm -f "${RT}/trusted-scripts/ci-aggregate-gate.sh"
-verdict "trusted verdict script missing on a PR -> BLOCKED" 1 pull_request success success success
+verdict "trusted verdict script missing on a PR -> BLOCKED"       1 pull_request success success success
+verdict "trusted verdict script missing on the audit -> BLOCKED"  1 schedule    skipped success success
 
 finish

@@ -2,7 +2,7 @@
 
 ## Branch flow
 
-    feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/*  →  dev  →  staging  →  main
+    feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/* | perf/* | refactor/* | test/*  →  dev  →  staging  →  main
 
 - **`dev`** — integration branch. **Open your PR here.**
 
@@ -17,8 +17,9 @@
 
 The base-branch guard — the first step of the `checks` job — fails any PR whose base is wrong
 for its head, and **fails closed on an
-unrecognized branch prefix**. Need a new prefix? Add it to the `case` statement in
-`scripts/check-base-branch.sh` (and to the matrix above) in a PR.
+unrecognized branch prefix**. The matrix is enforced centrally and the guard's own error output is its
+authoritative statement — if this list and that message ever disagree, the message is right. Need a new
+prefix? Open a PR against `Avenue-Z/repo-template`.
 
 The guard reads its decision script from the **base** branch, so a PR cannot rewrite the rule it
 is being judged against. It cannot, however, defend against a PR that edits

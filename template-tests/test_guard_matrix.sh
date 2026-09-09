@@ -31,12 +31,41 @@ assert_pass dependabot/npm/foo-1.2.3 dev
 assert_pass dev staging
 assert_pass staging main
 
+# The three prefixes added when the matrix became org-wide (spec §1). perf/ has 2 real uses in the
+# fleet; refactor/ and test/ are conventional-commit types added pre-emptively, on the reasoning that
+# a contributor who reaches for a legitimate type and is refused learns the guard is arbitrary rather
+# than that their branch is wrong.
+assert_pass perf/x dev
+assert_pass refactor/x dev
+assert_pass test/x dev
+
 assert_fail feat/x main
 assert_fail feat/x staging
 assert_fail dev main
 assert_fail staging dev
 assert_fail wip/x dev
 assert_fail randomname dev
+
+# The three deliberate exclusions (spec §1 and Rejected). Each was wanted at some point.
+assert_fail security/x dev     # a dep bump is fix(deps): -> fix/. The guard was right.
+assert_fail feature/x dev      # the most common near-miss; must be REJECTED, not accepted
+assert_fail revert/x dev       # GitHub's Revert button generates revert-<PR#>-<branch>, with a HYPHEN
+assert_fail revert-42-feat/x dev
+
+echo "guard-base-branch: the error message names the correction for the common near-miss"
+# The single most common near-miss is feature/ (6 branches in the fleet). Rejecting it silently and
+# rejecting it with "use feat/, not feature/" cost the same to implement and differ entirely in
+# whether the contributor's next push succeeds.
+msg="$("$SCRIPT" feature/x dev 2>&1 || true)"
+assert_match "the guard names feat/ when it rejects feature/" 'use feat/, not feature/' "$msg"
+# Once the script is central, scripts/check-base-branch.sh does not exist in the contributor's repo.
+# Telling them to edit a path they cannot see, in the moment they are already confused, is worse than
+# saying nothing. The message must point at a PR against the template instead.
+assert_nomatch "the guard no longer tells a consumer to edit a file they do not have" \
+  'case statement in scripts/check-base-branch\.sh' "$msg"
+assert_match "the guard points at a PR against the template" 'Avenue-Z/repo-template' "$msg"
+assert_match "the guard's own output lists the full matrix" \
+  'perf/.*refactor/.*test/' "$msg"
 
 echo "guard-base-branch: the guard's logic must come from the BASE branch, not the PR it judges"
 # The workflow runs on pull_request, so a default checkout gives it the PR HEAD's tree — which

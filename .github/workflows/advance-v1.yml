@@ -31,6 +31,13 @@ on:
 permissions:
   contents: write
 
+# Two closely-spaced merges would otherwise race: if the OLDER run's tag push finishes LAST, v1 moves
+# BACKWARD and the fleet silently runs a stale gate with no red check anywhere. cancel-in-progress is
+# deliberately false — a cancelled advance is a missed propagation, not a safe outcome.
+concurrency:
+  group: advance-v1
+  cancel-in-progress: false
+
 jobs:
   advance:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
@@ -55,6 +62,17 @@ jobs:
           set -euo pipefail
           git fetch --tags --force >/dev/null 2>&1 || {
             echo "::error::could not fetch tags — refusing to advance v1"; exit 1; }
+
+          # ACKNOWLEDGED skips the tripwire below, but it must never skip THIS: without it, anyone
+          # who can dispatch this workflow could point v1 at any commit reachable in the repo — an
+          # unmerged, never-tested, contract-breaking SHA — via the Actions app's ruleset bypass. The
+          # checkout's fetch-depth: 0 does not guarantee a local origin/main tracking ref for every
+          # ref shape actions/checkout takes when given a bare SHA, so fetch it explicitly rather than
+          # assume it is already present.
+          git fetch origin main >/dev/null 2>&1 || {
+            echo "::error::could not fetch main — refusing to advance v1"; exit 1; }
+          git merge-base --is-ancestor "${TARGET_SHA}" origin/main || {
+            echo "::error::${TARGET_SHA} is not an ancestor of main — refusing to point v1 at it"; exit 1; }
 
           if [ "${ACKNOWLEDGED}" = "true" ]; then
             echo "::notice::contract change acknowledged by hand — skipping the tripwire comparison"

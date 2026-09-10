@@ -1049,10 +1049,28 @@ Recorded as open, not as decided:
    by hand in 11 repos, with no fail-safe when unset). **Undecided.**
 6. **`repo-template`'s own PRs supply the scripts that judge them** (§2). The deliberate consequence of
    keeping this repo's `pull_request` runs on a workspace checkout, so that a PR changing a gate script
-   is actually exercised by the run reviewing it. `template-tests` is the compensating control and a PR
-   that edits a script and its suite together defeats it; code ownership is not available as a second
-   control, because this repo has no live `.github/CODEOWNERS` and the shipped ruleset sets
-   `require_code_owner_review: false`. **Accepted risk, scoped to this repo.**
+   is actually exercised by the run reviewing it — and so that the PR cutting Phase A is not red for
+   failing to check out a tag Phase A has not cut yet.
+
+   **This is a REDUCTION against what shipped in PR #59**, and it is the one security delta in the
+   reusable-workflow change. Under #59 all three gate scripts were staged from the BASE branch, out of
+   the PR's reach. They now come from the workspace — the PR head — so on this repo a PR can rewrite
+   `check-base-branch.sh`, `sca-gate.sh` or `ci-aggregate-gate.sh` to `exit 0` and its own run executes
+   that version. With `required_approving_review_count: 0`, nobody is obliged to look.
+
+   **The compensating control is `template-tests`, and its limit is exact.** It runs on the same PR and
+   `test_guard_matrix.sh` asserts the branch matrix directly, so a lone `exit 0` rewrite turns a
+   REQUIRED context red. A PR that edits the script *and* its suite in the same change defeats it.
+   Code ownership is not available as the second control that would catch that: this repo has no live
+   `.github/CODEOWNERS`, and the shipped ruleset sets `require_code_owner_review: false`.
+
+   **Consumers are strictly stronger, not weaker.** All eleven get their scripts from the immutable tag
+   via `github.job_workflow_ref`, entirely out of reach of the PR under review. The weakening is scoped
+   to the one repo that cannot bootstrap any other way.
+
+   **Accepted risk, scoped to this repo**, on the grounds that the alternative is a template that cannot
+   change its own gate. Revisit if `.github/CODEOWNERS` ever goes live here, which would make
+   `require_code_owner_review` a real second control over `scripts/`.
 7. **Clause-3 breaks reach the fleet ungated** (§1, §4). A behaviour change that alters no declared
    surface passes all three gating layers and auto-deploys on the next push to `main`. No mechanism
    here catches it. **Accepted risk**, reduced only by the `dev → staging → main` soak and by §1's

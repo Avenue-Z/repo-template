@@ -100,6 +100,21 @@ design document written during a CI outage is exactly where that rule gets teste
   **Phase B probe:** one job in `data-warehouse` — `actions/checkout` with
   `repository: Avenue-Z/repo-template`, `ref: v1`, `path: .trusted-template`, the default token, then
   `ls .trusted-template/scripts`. Yes or no, in one billed minute.
+- **Whether `github.job_workflow_ref` is empty on a NON-called run, or is populated equal to
+  `github.workflow_ref`.** §2's staging step refuses when that context is empty in a repository that is
+  not the template, and its comment calls that state "impossible". If the context is instead populated
+  on a direct run, the refusal never fires and the failure moves one step later, to a checkout of a ref
+  that does not exist in `repo-template`. Still fail-closed either way — but the maintainer sees
+  "ref not found" instead of the message written for them, which is the difference between a two-minute
+  diagnosis and an afternoon. **Phase B probe:** echo `github.job_workflow_ref` from an ordinary
+  `pull_request` job and from a called one, in the same run.
+- **Whether a fork PR whose head branch is literally named `main` reaches the advance workflow.**
+  §4's `workflow_run` trigger filters on `branches: [main]`, and that filter matches the *head branch*
+  of the upstream run. A fork PR from a branch called `main` therefore satisfies it. The ancestry check
+  refuses such a SHA correctly — it sits before the acknowledged short-circuit — but the checkout fails
+  first, so the visible result is a red `advance-v1` on somebody else's fork PR. Noise rather than a
+  hole, and worth confirming rather than assuming. **Phase B probe:** open a PR from a fork branch
+  named `main` and watch whether `advance-v1` is queued at all.
 
 ---
 
@@ -481,9 +496,21 @@ keyed on whether the local `checks.yml` declares `workflow_call` — true in `re
 caller:
 
 ```text
-checks.yml declares workflow_call  ->  require 'checks'           (repo-template itself)
-otherwise                          ->  require 'checks / checks'  (a migrated consumer)
+checks.yml declares workflow_call        ->  require 'checks'           (repo-template itself)
+the `checks` job declares a `uses:`      ->  require 'checks / checks'  (a migrated consumer)
+neither                                  ->  require 'checks'           (a self-contained copy)
 ```
+
+**There are three shapes here, not two, and an earlier draft of this section missed the third.** It
+keyed the consumer branch on the *absence* of `workflow_call`, which is not the same question. A
+**self-contained copy** of `checks.yml` — no `workflow_call`, no `uses:` — declares neither, and it is
+not hypothetical: it is what all eleven repos hold today, and §2 designates it as the migration
+rollback path ("a consumer whose migration goes wrong restores a self-contained `checks.yml`"). Such a
+copy reports plain `checks`, but the absence-of-`workflow_call` test would have required
+`checks / checks` from it. On `data-contract` or `avenue-z-reporting-v2`, where rulesets are live,
+re-running `apply-rulesets.sh` after a rollback would then hang every PR pending forever — the rollback
+path detonating the thing it exists to recover from. Keying the consumer branch on the **presence of a
+`uses:` in the `checks` job** answers the question actually being asked, and costs a line.
 
 One ruleset file, no new concept, and the precedent is the script's own. It is not free: the shipped
 `required_status_checks` list becomes empty, so the two suites that assert its contents move with it —
@@ -738,7 +765,17 @@ on:
     branches: [main]
 permissions:
   contents: write
+concurrency:
+  group: advance-v1
+  cancel-in-progress: false
 ```
+
+The `concurrency` group is not decoration and it is the one place in this design where §5's advice is
+inverted. Two merges landing close together produce two advance runs, and `git push --force` on a tag
+does not care which commit is newer: if the *older* run finishes last, **`v1` moves backward** and the
+fleet silently runs an older gate, with no red check anywhere to say so. `cancel-in-progress: false` is
+equally deliberate — §5 cancels superseded PR runs because a stale result is noise, but a cancelled
+*advance* is a missed propagation, which is the failure this whole document exists to remove.
 
 Guarded by `if: github.event.workflow_run.conclusion == 'success'`. Two mechanics inside it are easy to
 get wrong and silent when wrong.
@@ -793,6 +830,32 @@ normal path with the contract comparison skipped. Both properties that mattered 
 still moved by the workflow, never by a person at a keyboard**, and a human still has to state in the
 open that the surface moved. The only thing that changes is that the answer to "the surface moved" can
 be *"yes, additively"* as well as *"cut v2"*.
+
+**One constraint the escape hatch must carry, or it is not an escape hatch — it is a bypass.** Written
+as "a `workflow_dispatch` skips the comparison", the acknowledgement path skips *everything*: the
+tripwire and the `v1`-resolution refusal both. That was the shape this document described, and driving
+it proved what it costs — an unmerged, contract-breaking, never-tested SHA returns "advance", and so
+does a branch name like `main`, which tags whatever `main` happens to be at dispatch time rather than
+what was tested. The effective policy becomes: **any account with write access can point `v1` at any
+commit in the repository**, using the very Actions-app ruleset bypass §1 introduced to stop exactly
+that. A control that converts its own protection into a general-purpose "point `v1` anywhere" button is
+not a control.
+
+So the dispatched SHA is constrained before anything else happens:
+
+```bash
+git merge-base --is-ancestor "${TARGET_SHA}" origin/main || {
+  echo "::error::${TARGET_SHA} is not an ancestor of main — refusing to point v1 at it"; exit 1; }
+```
+
+`git merge-base --is-ancestor` exits 0 for an ancestor, 1 for a non-ancestor, and other non-zero codes
+for a genuine error — a malformed SHA, a missing object. All three of the latter are refusals here,
+which keeps the same posture as the rest of this section: "I could not tell" is never "go ahead".
+
+This narrows the hatch to what it was for — shipping an **additive** contract change without cutting
+`v2` — and leaves one thing it still does not do: it confirms the SHA is *on `main`*, not that
+`template-tests` ever passed on it. Closing that needs a `gh api` lookup of the run conclusion for the
+dispatched SHA, which is a new external dependency. Recorded in `## Open items` rather than assumed.
 
 `contents: write` is the only elevated permission anywhere in this design, and it exists solely to move
 a tag. That is the argument for the tag ruleset in §1 being applied in the same change: the workflow
@@ -1007,6 +1070,23 @@ Recorded as open, not as decided:
     The windowed one leaves `main`/`staging`/`dev` without a required status check between two
     out-of-band ruleset edits; the overlap one costs an extra billed job per PR while both workflows
     report. **Decide when the cutover is scheduled, on who is available to finish it the same day.**
+11. **The acknowledgement path confirms the dispatched SHA is on `main`, not that it was ever tested**
+    (§4). The ancestry check closes the "point `v1` anywhere" hole; it does not establish that
+    `template-tests` concluded `success` for that commit. Closing it needs a `gh api` lookup of the run
+    conclusion for the SHA — a new external dependency inside the one workflow holding
+    `contents: write`, and a new failure mode when the API is unreachable ("I could not ask" would have
+    to refuse, which makes the escape hatch itself outage-sensitive). **Undecided**, and deliberately
+    not built as part of Phase A.
+12. **The self-call couples fleet-wide propagation to the template's own dependency tree** (§4 layer 2).
+    The self-call runs `checks.yml` on the `push` path, where there is no base ref — so every push to
+    `main` performs a full-history secret scan and a full `osv-scanner scan -r ./` of the tree,
+    `templates/` included. Its result is part of the `template-tests` run whose conclusion gates the
+    tag. **A new advisory published against any dependency in `templates/` therefore halts propagation
+    of security fixes to all eleven repos**, with the only signal a red run on `main`. It fails closed,
+    and the `workflow_dispatch` hatch can move `v1` past it — but that hatch is documented solely as
+    "the way out for an additive contract change", so an operator meeting this would not know to reach
+    for it. **Accepted for Phase A**, because the alternative is exempting the template's own tree from
+    its own gate. Revisit if it ever actually fires.
 
 ---
 

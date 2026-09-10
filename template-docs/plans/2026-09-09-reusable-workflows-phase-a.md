@@ -1394,6 +1394,14 @@ git push origin refs/tags/v1.0.0 refs/tags/v1
 Verify: `git ls-remote --tags origin | grep -E 'v1$|v1\.0\.0'` shows both, at the same SHA as
 `origin/main`.
 
+**Cut `v1` at or after the commit that introduced `.github/reusable-contract.json` — not before.** The
+advance workflow diffs that path between what `v1` points at and the target. If `v1` sits on a commit
+predating the file, every diff reports it as an addition and **every advance refuses, forever**, until
+someone dispatches manually. It fails in the safe direction, but the symptom — a tag that never moves,
+with a "the consumer contract has changed" error that names a file nobody touched — is confusing enough
+to cost an afternoon. Cutting at `origin/main` after Phase A has landed satisfies this automatically;
+the trap is only reachable if someone back-dates the tag.
+
 - [ ] **Step 3: Protect the tag, with the one bypass actor that keeps the advance working**
 
 Look the GitHub Actions app's id up rather than typing one from memory:

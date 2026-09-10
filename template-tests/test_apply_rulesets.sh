@@ -222,7 +222,7 @@ esac
 STUBEOF
 chmod +x "${STUB}/gh"
 
-cout="$(cd "${FIXTURE}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1 || true)"
+cout="$(cd "${FIXTURE}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1)" || true
 assert_match   "a caller requires 'checks / checks'" 'required: checks / checks' "$cout"
 assert_nomatch "a caller does NOT require the plain 'checks' context" 'required: checks$' "$cout"
 rm -rf "${FIXTURE}"
@@ -266,7 +266,7 @@ esac
 STUBEOF
 chmod +x "${STUB}/gh"
 
-cout3="$(cd "${FIXTURE3}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1 || true)"
+cout3="$(cd "${FIXTURE3}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1)" || true
 assert_match   "a self-contained copy requires plain 'checks'" 'required: checks$' "$cout3"
 assert_nomatch "a self-contained copy does NOT require 'checks / checks'" 'required: checks / checks' "$cout3"
 rm -rf "${FIXTURE3}"

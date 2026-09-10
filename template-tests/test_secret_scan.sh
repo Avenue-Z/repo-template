@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 # shellcheck source=template-tests/lib.sh disable=SC1091
 source template-tests/lib.sh
 
-WORKFLOW=.github/workflows/secret-scan.yml
+WORKFLOW=.github/workflows/checks.yml
 PRECOMMIT=.pre-commit-config.yaml
 
 # secret-scan is the ONLY control that actually blocks a credential from reaching a protected
@@ -17,11 +17,18 @@ PRECOMMIT=.pre-commit-config.yaml
 echo "secret-scan: the job exists and is named exactly what the rulesets require"
 assert_file "$WORKFLOW exists" "$WORKFLOW"
 wf="$(cat "$WORKFLOW")"
-if grep -A1 '^jobs:' "$WORKFLOW" | tail -1 | grep -q '^  secret-scan:$'; then
-  pass "jobs key is literally secret-scan"
+if grep -A1 '^jobs:' "$WORKFLOW" | tail -1 | grep -q '^  checks:$'; then
+  pass "jobs key is literally checks (the ruleset requires that exact context)"
 else
-  fail "jobs key must be literally 'secret-scan' (the ruleset requires that exact context)"
+  fail "jobs key must be literally 'checks' (the ruleset requires that exact context)"
 fi
+# The secret scan is now a STEP, not a job, so a failure no longer fails the job by itself —
+# continue-on-error records the outcome and the verdict step renders judgment. That means the
+# step MUST carry an id the verdict can read, and the verdict MUST name it. If either drifts,
+# gitleaks still runs, still finds the key, still turns red in the log — and the job goes GREEN.
+assert_match "the gitleaks step carries id: secret_scan"        'id: secret_scan'                     "$wf"
+assert_match "the verdict reads that step's outcome"            'steps\.secret_scan\.outcome'        "$wf"
+assert_match "the verdict names secret-scan as a gate"          'secret-scan:\$\{SECRET_SCAN_RESULT\}' "$wf"
 
 echo "secret-scan: gitleaks must FAIL the job on a finding"
 # --exit-code 1 is the entire control. Without it (or with 0), gitleaks prints the leak and

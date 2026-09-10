@@ -34,8 +34,8 @@ The whole point of the template: one click plus one script.
      `required_approving_review_count: 0`, so it does not by itself **require** approval.
 3. **Apply protection.** `./scripts/apply-rulesets.sh` applies branch protection where the plan
    allows and prints exactly what it skipped. On a **private repo on the Free plan** it will tell
-   you plainly that `main` is *not* protected and that enforcement is `guard-base-branch` +
-   `secret-scan` + convention. That is expected, not a failure.
+   you plainly that `main` is *not* protected and that enforcement is the `checks` workflow +
+   convention. That is expected, not a failure.
 4. **`next` stack only — link Vercel.** `vercel login`, then `./scripts/link-vercel.sh`. It links but
    **never deploys**: `vercel.json` ships `deploymentEnabled: false`, and it refuses to link unless
    the default branch is `main`. Enabling a branch means editing `vercel.json` in a reviewed PR.
@@ -102,6 +102,24 @@ Full detail: `Avenue-Z/data-contract` `docs/consuming-repo-setup.md`; the
 `repo-template-first` also routes "new repo / scaffold a service" requests to this flow
 automatically, so for net-new work adoption is essentially free once people know to start here.
 
+### Where the gate actually lives
+
+A repo generated after 2026-09 carries a nine-line `.github/workflows/checks.yml` that calls
+`Avenue-Z/repo-template/.github/workflows/checks.yml@v1`. The gate's logic — the branch matrix, the
+secret scan, the dependency policy — lives in the template and reaches this repo through the moving
+`v1` tag. **There is nothing to update here when the gate improves.**
+
+Two consequences worth knowing before they surprise you:
+
+- **`.github/sca-policy.json` is still yours.** The tier is per-repo on purpose: a client-facing repo
+  and an internal one legitimately differ.
+- **Your triggers are still yours.** A reusable workflow cannot define `on:` for its callers, so the
+  `pull_request` types and the weekly cron live in your file. Changing the audit schedule fleet-wide is
+  a PR per repo.
+
+If `@v1` ever breaks your repo, pin the caller to the last good point tag (`@v1.N.0`) and open an issue
+against the template. Do not delete the caller — that removes the only gate the repo has.
+
 ---
 
 ## 2. Existing repo — a careful manual port
@@ -120,9 +138,12 @@ in their working trees or history. So the port is manual and gated on a secret a
 
    **Rotate anything it finds.** Removing the commit is not enough — a key that reached the remote is
    burned. This step is non-negotiable and comes before the rest.
-2. **Copy the stack-agnostic governance** (safe on a private repo, no visibility change needed):
-   - `.github/workflows/guard-base-branch.yml` + `scripts/check-base-branch.sh`
-   - `.github/workflows/secret-scan.yml`
+2. **Write the stack-agnostic governance** (safe on a private repo, no visibility change needed):
+   - `.github/workflows/checks.yml` as a **caller** — see "Where the gate actually lives" above for
+     what it looks like. Do **not** copy `checks.yml`'s body from `repo-template` itself: outside
+     `repo-template`, `GITHUB_REPOSITORY` takes the consumer path, and the file either refuses
+     outright or tries to check out `Avenue-Z/repo-template` at your own PR ref. Either way the
+     gate comes up red and cannot be made green from inside your repo.
    - `.pre-commit-config.yaml` (then `pre-commit install`)
    - the credential and env blocks from `.gitignore`, and `.env.example`
    - `CONTRIBUTING.md`, `SECURITY.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`
@@ -130,7 +151,7 @@ in their working trees or history. So the port is manual and gated on a secret a
    (and to `main` if the repo deploys to Vercel — see the production-branch note above).
 4. **Protection comes last, and only where possible.** Branch protection and rulesets are
    unavailable on private repos on Free. Until the repo is public or the org is on Team, enforcement
-   is exactly what a new private repo gets: `guard-base-branch` + `secret-scan` + convention.
+   is exactly what a new private repo gets: the `checks` workflow + convention.
    **Do not flip a private repo to public** without completing step 1 and rotating any findings.
 
 ---

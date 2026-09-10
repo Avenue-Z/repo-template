@@ -8,6 +8,7 @@
 # GITHUB_TOKEN.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=template-tests/lib.sh disable=SC1091
 source "${REPO_ROOT}/template-tests/lib.sh"
 
 # Throwaway clones so we never mutate the real template (pattern from test_init_repo.sh).

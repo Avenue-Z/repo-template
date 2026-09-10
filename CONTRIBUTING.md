@@ -21,10 +21,12 @@ unrecognized branch prefix**. The matrix is enforced centrally and the guard's o
 authoritative statement — if this list and that message ever disagree, the message is right. Need a new
 prefix? Open a PR against `Avenue-Z/repo-template`.
 
-The guard reads its decision script from the **base** branch, so a PR cannot rewrite the rule it
-is being judged against. It cannot, however, defend against a PR that edits
-`.github/workflows/checks.yml` itself — Actions runs the workflow file from the PR's
-head, and **nothing in this repo's configuration forces anyone to review that.** `CODEOWNERS`
+The three gate scripts are staged from `Avenue-Z/repo-template` at the ref `checks.yml` was
+**called at**, so in a repo that calls this workflow, a PR cannot supply them. In
+`repo-template` itself they come from the **workspace** instead — a deliberate trade-off, not an
+oversight; see `SECURITY.md` for why and what it costs. Either way, this cannot defend against a
+PR that edits `.github/workflows/checks.yml` itself — Actions runs the workflow file from the
+PR's head, and **nothing in this repo's configuration forces anyone to review that.** `CODEOWNERS`
 routes such a PR to a reviewer; it does not require their approval. Review any PR touching
 `.github/` by convention, and read `SECURITY.md` before assuming you are protected from one.
 

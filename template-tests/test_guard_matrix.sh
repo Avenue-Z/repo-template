@@ -86,12 +86,42 @@ assert_match "the script ref comes from github.job_workflow_ref" \
 assert_nomatch "the script ref is NOT taken from github.workflow_ref (that is the caller's)" \
   '\$\{\{ *github\.workflow_ref *\}\}' "$wf"
 # A hardcoded tag would defeat the point tags exactly as silently: checks.yml@v1.2.0 would execute
-# scripts staged from the moving v1.
-assert_nomatch "the template checkout does not hardcode a tag" 'ref: *v1 *$' "$wf"
+# scripts staged from the moving v1. `github.job_workflow_ref` yields refs/tags/v1(.N.0), so
+# `ref: refs/tags/v1` is the natural spelling of that hardcoding — the original pattern here
+# (anchored on 'v1 *$' with nothing before it) never matched that spelling and passed against it.
+#
+# STRUCTURAL, not a grep of the whole file: this very file's own comment a few lines up explains
+# the risk by naming the example `ref: v1` in backticks, so a whole-file grep for that spelling
+# matches the comment and would never see a real hardcode either. Parse the YAML and pull the
+# actual `ref:` value of the template checkout step, then check only that value.
+tt_ref="$(python3 - "$WORKFLOW" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+for s in d['jobs']['checks']['steps']:
+    w = s.get('with') or {}
+    if w.get('repository') == 'Avenue-Z/repo-template':
+        print(w.get('ref') or '')
+        break
+else:
+    print('')
+PY
+)"
+assert_match "the template checkout step exists and has a 'ref:'" '.' "$tt_ref"
+# Catch `ref: v1`, `ref: refs/tags/v1` and quoted variants of either, while still permitting the
+# legitimate `ref: ${{ steps.scripts_src.outputs.ref }}` (no literal 'v' + digit there).
+assert_nomatch "the template checkout does not hardcode a tag" \
+  "^['\"]?(refs/tags/)?v[0-9]" "$tt_ref"
 # repo-template's own PRs take the workspace copy instead, so a PR that CHANGES a gate script is
 # exercised by the run reviewing it, and so that Phase A's first PR is not red on a tag Phase A
 # exists to cut.
-assert_match "the staging step branches on the caller's repository" 'Avenue-Z/repo-template' "$wf"
+#
+# Assert the actual COMPARISON, not the bare repo name: 'Avenue-Z/repo-template' alone also sits in
+# the comment block right above this step and in the checkout `repository:` line elsewhere in the
+# file, so a plain assert_match on it is satisfied even if the discriminator below is inverted to
+# some other repo name entirely (proven by perturbation — changing checks.yml's `[ "${GITHUB_
+# REPOSITORY}" = "Avenue-Z/repo-template" ]` to name a different repo still passed the old check).
+assert_match "the staging step branches on the caller's repository" \
+  '\[ *"\$\{GITHUB_REPOSITORY\}" *= *"Avenue-Z/repo-template" *\]' "$wf"
 assert_match "declares a read-only permissions block" 'contents: *read' "$wf"
 
 echo "guard-base-branch: it is a step of the merged 'checks' job"
@@ -107,7 +137,7 @@ fi
 # checkout. Pointing it at scripts/check-base-branch.sh in the workspace would silently hand the
 # PR back the script that judges it — the exact hole the template checkout above exists to close.
 if grep -qE '\$\{RUNNER_TEMP\}/trusted-scripts/check-base-branch\.sh" "\$\{HEAD_REF\}" "\$\{BASE_REF\}"' "$WORKFLOW"; then
-  pass "the guard runs the trusted (base-branch) copy of check-base-branch.sh"
+  pass "the guard runs the trusted, staged copy of check-base-branch.sh (from the template, or the workspace in repo-template itself)"
 else
   fail "the guard must invoke \${RUNNER_TEMP}/trusted-scripts/check-base-branch.sh — not the PR's own copy"
 fi

@@ -227,4 +227,48 @@ assert_match   "a caller requires 'checks / checks'" 'required: checks / checks'
 assert_nomatch "a caller does NOT require the plain 'checks' context" 'required: checks$' "$cout"
 rm -rf "${FIXTURE}"
 
+# ---------------------------------------------------------------------------------------
+# THE THIRD SHAPE — a SELF-CONTAINED copy of checks.yml (no `workflow_call:`, and no `uses:` on
+# the `checks` job either) is the documented migration ROLLBACK path, and every one of the ~11
+# fleet repos holds exactly this shape today. Keying the decision on the ABSENCE of
+# `workflow_call` (instead of the PRESENCE of a `uses:`) used to fold this into the caller branch
+# and require `checks / checks` on a checks.yml that actually reports plain `checks` — on a repo
+# with live rulesets that hangs every PR PENDING FOREVER. Same fixture technique as the caller
+# case above: copies of this working tree's apply-rulesets.sh and repo-ruleset.json, not a
+# `git clone`.
+echo "apply-rulesets: a SELF-CONTAINED copy of checks.yml (the migration rollback path) requires plain 'checks'"
+FIXTURE3="$(mktemp -d)"
+mkdir -p "${FIXTURE3}/scripts" "${FIXTURE3}/.github/rulesets" "${FIXTURE3}/.github/workflows"
+cp scripts/apply-rulesets.sh "${FIXTURE3}/scripts/apply-rulesets.sh"
+cp .github/rulesets/repo-ruleset.json "${FIXTURE3}/.github/rulesets/repo-ruleset.json"
+cat > "${FIXTURE3}/.github/workflows/checks.yml" <<'SELFCONTAINED'
+name: checks
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: run the gates
+        run: echo "self-contained rollback copy — no workflow_call, no uses: on the checks job"
+SELFCONTAINED
+
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+# Minimal fake gh: only needs to answer the org-plan lookup, same as the caller case above.
+case "$*" in
+  *"orgs/Avenue-Z"*) echo free ;;
+  *) echo "fake gh: unexpected call: gh $*" >&2; exit 1 ;;
+esac
+STUBEOF
+chmod +x "${STUB}/gh"
+
+cout3="$(cd "${FIXTURE3}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1 || true)"
+assert_match   "a self-contained copy requires plain 'checks'" 'required: checks$' "$cout3"
+assert_nomatch "a self-contained copy does NOT require 'checks / checks'" 'required: checks / checks' "$cout3"
+rm -rf "${FIXTURE3}"
+
 finish

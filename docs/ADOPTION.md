@@ -138,8 +138,12 @@ in their working trees or history. So the port is manual and gated on a secret a
 
    **Rotate anything it finds.** Removing the commit is not enough — a key that reached the remote is
    burned. This step is non-negotiable and comes before the rest.
-2. **Copy the stack-agnostic governance** (safe on a private repo, no visibility change needed):
-   - `.github/workflows/checks.yml` + `scripts/check-base-branch.sh` + `scripts/sca-gate.sh`
+2. **Write the stack-agnostic governance** (safe on a private repo, no visibility change needed):
+   - `.github/workflows/checks.yml` as a **caller** — see "Where the gate actually lives" above for
+     what it looks like. Do **not** copy `checks.yml`'s body from `repo-template` itself: outside
+     `repo-template`, `GITHUB_REPOSITORY` takes the consumer path, and the file either refuses
+     outright or tries to check out `Avenue-Z/repo-template` at your own PR ref. Either way the
+     gate comes up red and cannot be made green from inside your repo.
    - `.pre-commit-config.yaml` (then `pre-commit install`)
    - the credential and env blocks from `.gitignore`, and `.env.example`
    - `CONTRIBUTING.md`, `SECURITY.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`

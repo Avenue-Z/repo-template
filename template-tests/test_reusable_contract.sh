@@ -53,13 +53,27 @@ assert_match "on: still declares the weekly audit"             'schedule'       
 
 echo "reusable contract: the self-call gates the tag (layer 2 of the spec's §4)"
 TT=.github/workflows/template-tests.yml
-tt="$(cat "$TT")"
 # It must live INSIDE template-tests.yml. advance-v1.yml chains off the template-tests workflow RUN,
 # so a self-call published as its own workflow would not gate anything and v1 could advance carrying a
 # reusable workflow that is not callable at all — the one failure this layer exists to catch.
-assert_match "template-tests.yml calls checks.yml locally" 'uses: \./\.github/workflows/checks\.yml' "$tt"
+#
+# STRUCTURAL, not a grep of the whole file. A plain `assert_match` here is satisfied by these two
+# strings sitting in a COMMENT above a self-call job that was gutted to `runs-on: ubuntu-latest` /
+# `steps: - run: echo noop` (no `uses:` at all) with no `if:` restricting it to push — proven by
+# perturbation, and both grep-based assertions still passed. Parse the YAML and read the
+# self-call JOB'S OWN keys instead of the file's text.
+self_call="$(python3 - "$TT" <<'PY'
+import json, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+job = d.get('jobs', {}).get('self-call') or {}
+print(json.dumps({"uses": job.get('uses'), "if": job.get('if')}))
+PY
+)"
+assert_eq "./.github/workflows/checks.yml" "$(jq -r '.uses' <<<"$self_call")" \
+  "the self-call job itself 'uses' checks.yml (not just mentioned in a comment)"
 # Push-only. On every PR it would be one extra billed job per PR across the fleet, in a design whose
 # premise is that job COUNT is the bill.
-assert_match "the self-call runs on push, not on every PR" "github\.event_name == 'push'" "$tt"
+assert_eq "github.event_name == 'push'" "$(jq -r '.if' <<<"$self_call")" \
+  "the self-call job's own 'if' restricts it to push (not just mentioned in a comment)"
 
 finish

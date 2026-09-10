@@ -9,11 +9,18 @@ name: checks
 # minutes with no check weakened. Job COUNT is the cost driver here, not job duration — do not
 # "optimise" this by caching downloads; a 21s job and a 12s job bill exactly the same.
 #
-# The job key MUST stay literally `checks`. .github/rulesets/repo-ruleset.json requires the
-# status-check context "checks" (BAKED IN, because this workflow ships into every generated
-# repo). A required check that never reports does NOT fail a PR — it hangs it PENDING FOREVER
-# and nothing can be merged again. Renaming this job without repo-ruleset.json in the same
-# commit bricks every repo the ruleset was applied to.
+# The job key MUST stay literally `checks`. It is NOT baked into repo-ruleset.json: that file is
+# shared by every shape this file can take, so scripts/apply-rulesets.sh decides the context to
+# require by reading THIS workflow at apply time — `checks` when it declares `workflow_call`
+# (repo-template itself, or a self-contained rollback copy), `checks / checks` when the `checks`
+# job is a CALLER (every generated repo, today). Renaming the job here changes the second half of
+# that string for every consumer already requiring `checks / checks` — and editing
+# repo-ruleset.json in the same commit does NOTHING about it: that file lives in repo-template,
+# while each consumer's own ruleset was set by its OWN past run of apply-rulesets.sh against its
+# OWN checks.yml, and stays exactly as it was until someone re-runs it there. A required check
+# that never reports does NOT fail a PR — it hangs it PENDING FOREVER and nothing can be merged
+# again. Renaming this job means re-running apply-rulesets.sh in every consumer repo before (or
+# atomically with) cutting the tag that carries the rename — not editing a file in this repo.
 
 on:
   # CONSUMERS CALL THIS. `workflow_call` alongside `pull_request` is the standard shape for a workflow

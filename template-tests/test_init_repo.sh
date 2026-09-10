@@ -4,6 +4,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=template-tests/lib.sh disable=SC1091
 source "${REPO_ROOT}/template-tests/lib.sh"
 
+# This suite `git clone`s REPO_ROOT below, so it always drives the COMMITTED scripts/init-repo.sh.
+# An uncommitted edit to init-repo.sh is invisible to it — commit before re-running this suite to
+# see your change exercised. Two implementers lost time to this.
+
 # Build a throwaway clone so we never mutate the real template.
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -57,6 +61,23 @@ assert_nomatch "the generated checks.yml is NOT a copy of the reusable workflow"
   'workflow_call' "$gen_checks"
 assert_match "the caller still declares its own triggers (they cannot be inherited)" \
   'pull_request' "$gen_checks"
+# STRUCTURAL, not another grep: scripts/apply-rulesets.sh hardcodes the literal 'checks / checks'
+# context for a caller (around its line 114), and nothing before this ties that string to the job
+# key init-repo.sh actually writes. Renaming the heredoc's job key (e.g. to 'gate') would still
+# satisfy every assert_match above — 'uses:', 'pull_request' and the absence of 'workflow_call'
+# are all still true — while every PR in every repo generated after that hangs PENDING FOREVER,
+# waiting on a 'checks / checks' context nothing reports. Parse the YAML and check the job KEY.
+gen_job_count_and_key="$(python3 - .github/workflows/checks.yml <<'PY'
+import json, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+jobs = list(d.get('jobs', {}) or {})
+print(json.dumps({"count": len(jobs), "key": jobs[0] if jobs else None}))
+PY
+)"
+assert_eq "1" "$(jq -r '.count' <<<"$gen_job_count_and_key")" \
+  "the generated caller declares exactly one job"
+assert_eq "checks" "$(jq -r '.key' <<<"$gen_job_count_and_key")" \
+  "the generated caller's job key is literally 'checks' (apply-rulesets.sh hardcodes 'checks / checks')"
 # Template-only artifacts must not ship. reusable-contract.json is the template's own golden file and
 # advance-v1.yml force-moves a tag; neither has any business in a generated repo.
 assert_no_file "the golden contract file did not ship" .github/reusable-contract.json
@@ -67,7 +88,7 @@ assert_no_file "the v1 advance workflow did not ship" .github/workflows/advance-
 assert_no_file "guard-base-branch.yml is gone (merged into checks.yml)" .github/workflows/guard-base-branch.yml
 assert_no_file "secret-scan.yml is gone (merged into checks.yml)" .github/workflows/secret-scan.yml
 assert_no_file "sca.yml is gone (merged into checks.yml)" .github/workflows/sca.yml
-assert_file    "check-base-branch.sh survived (checks.yml stages it from the base branch)" scripts/check-base-branch.sh
+assert_file    "check-base-branch.sh survived (checks.yml stages it from the template, at the ref it was called at)" scripts/check-base-branch.sh
 assert_file    "sca-policy.json survived" .github/sca-policy.json
 assert_file    "sca-gate.sh survived" scripts/sca-gate.sh
 # Same class as the SCA scripts above: the generated python repo's required `ci` check runs both of

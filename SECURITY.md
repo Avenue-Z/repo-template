@@ -32,11 +32,14 @@ since the last run. Two boundaries follow from that, and neither is obvious:
 ## The base-branch guard can be bypassed by a PR that edits the guard — ACCEPTED, NOT MITIGATED
 
 The base-branch guard is the first step of the `checks` job. It runs on `pull_request`, and
-GitHub Actions reads the workflow file **from the PR's head**. The job checks out the base branch
-to get `scripts/check-base-branch.sh` — and, since the merge, `scripts/ci-aggregate-gate.sh` too,
-because one shared verdict script now decides all three gates and a PR-supplied copy could switch
-them all off at once. So a PR cannot rewrite the *decision logic* it is judged by — but a PR that
-edits `.github/workflows/checks.yml` itself can still neuter the check.
+GitHub Actions reads the workflow file **from the PR's head**. The three gate scripts —
+`scripts/check-base-branch.sh` and, since the merge, `scripts/ci-aggregate-gate.sh` too (one
+shared verdict script now decides all three gates, so a PR-supplied copy could switch them all
+off at once) — are staged from `Avenue-Z/repo-template` at the ref this workflow was **called
+at**, so in a repo that calls it, a PR cannot supply them. **In `repo-template` itself they come
+from the workspace instead** — see below for why that trade-off was made and what it costs. So a
+PR cannot rewrite the *decision logic* it is judged by in a repo that calls this workflow — but a
+PR that edits `.github/workflows/checks.yml` itself can still neuter the check, in either case.
 
 **Nothing currently stops that. This section used to claim CODEOWNERS did, and that was false.**
 
@@ -75,6 +78,16 @@ This hole does not close under the reusable-workflow design — it **changes sha
 Actions still reads the workflow file from the PR head. Previously neutering the gates meant rewriting
 a 262-line `checks.yml` in a way a reviewer would notice at a glance. Now it is changing `@v1` to
 `@my-branch` on **one line of a nine-line file**. Same hole, materially easier to miss in review.
+
+Staging the gate scripts from the template at the called ref (rather than the workspace) is what
+closes that for a repo calling this workflow. `repo-template`'s own PRs are the deliberate
+exception: staging from the workspace instead is what lets a PR that *changes* a gate script be
+exercised by the run reviewing it, and it is what keeps this migration's own first PR from being
+red on a tag it exists to create — so in this one repo, the guard is again supplied by the PR it
+judges. `template-tests` runs on the same PR and `test_guard_matrix.sh` asserts the matrix
+directly, so a solo `exit 0` rewrite of a gate script turns a REQUIRED context red — but do not
+read that as closing the hole: a PR that edits a gate script *and* its own test coverage together
+still defeats it.
 
 **`.github/` being code-owned therefore goes from good practice to load-bearing.** Note what that
 currently requires and does not yet have: `repo-template` ships `.github/CODEOWNERS.tmpl` and only

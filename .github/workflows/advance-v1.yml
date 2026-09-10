@@ -15,14 +15,24 @@ on:
     workflows: [template-tests]
     types: [completed]
     branches: [main]
-  # The way out for a change that moves the golden contract file but is backward-compatible — a new
-  # input WITH a default. The tag is still moved by this workflow, never by a person at a keyboard;
-  # what a human supplies is the acknowledgement, in the open, that the surface moved and it was
-  # additive.
+  # The way out for TWO cases. Both leave a correct `main` unable to move the tag on its own, and in
+  # both the tag is still moved by THIS workflow, never by a person at a keyboard — what a human
+  # supplies is the acknowledgement, in the open, that they looked and the advance is right.
+  #
+  #   1. A change that moves the golden contract file but is BACKWARD-COMPATIBLE — a new input WITH a
+  #      default. The tripwire compares the contract file and cannot tell additive from breaking, so
+  #      it refuses either way; the acknowledgement is the human saying which one it is.
+  #   2. A red `template-tests` on `main` caused by a NEW ADVISORY against a dependency in
+  #      `templates/`, rather than by anything the pushed change did. The self-call runs `checks.yml`
+  #      on the push path, which scans the whole tree, `templates/` included — so a template-dep
+  #      advisory reddens the very run whose conclusion gates the tag, and halts propagation of
+  #      UNRELATED security fixes to all eleven consumer repos. Bumping the dependency is the real
+  #      fix; this hatch is what unblocks the fleet while that lands. See Open item 12 in
+  #      template-docs/specs/2026-09-09-reusable-workflows-design.md.
   workflow_dispatch:
     inputs:
       acknowledge-contract-change:
-        description: 'SHA on main to advance v1 to, for an ADDITIVE contract change'
+        description: 'SHA on main to advance v1 to — for an ADDITIVE contract change, or a templates/ advisory blocking the tag'
         required: true
 
 # The only elevated permission in this design, and it exists solely to move a tag. The v1 tag ruleset

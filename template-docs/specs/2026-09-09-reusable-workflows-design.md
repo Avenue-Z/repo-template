@@ -1083,10 +1083,11 @@ Recorded as open, not as decided:
     `templates/` included. Its result is part of the `template-tests` run whose conclusion gates the
     tag. **A new advisory published against any dependency in `templates/` therefore halts propagation
     of security fixes to all eleven repos**, with the only signal a red run on `main`. It fails closed,
-    and the `workflow_dispatch` hatch can move `v1` past it — but that hatch is documented solely as
-    "the way out for an additive contract change", so an operator meeting this would not know to reach
-    for it. **Accepted for Phase A**, because the alternative is exempting the template's own tree from
-    its own gate. Revisit if it ever actually fires.
+    and the `workflow_dispatch` hatch can move `v1` past it. That hatch now documents this case
+    explicitly, alongside the additive-contract-change one, in `advance-v1.yml`'s `on:` block and in
+    the dispatch input's own description — an operator who meets this reads the escape on the form
+    they are already looking at. **Accepted for Phase A**, because the alternative is exempting the
+    template's own tree from its own gate. Revisit if it ever actually fires.
 
 ---
 

@@ -102,8 +102,14 @@ contexts=$(jq -r '.rules[] | select(.type=="required_status_checks") | .paramete
 # because GitHub bills each job rounded up to a full minute and all three finished in under ten
 # seconds. The context name and the job key in checks.yml must move together — a required
 # context whose job no longer exists hangs every PR PENDING FOREVER.
-expected=$(printf 'checks')
-assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {checks}"
+# NO CONTEXT IS BAKED IN ANY MORE, and that is the fix for a collision, not a weakening.
+# repo-ruleset.json is ONE file applied to BOTH this repo and every generated repo
+# (apply-rulesets.sh:78, and its comment at :85-88). repo-template reports literally `checks`; a
+# migrated consumer reports `checks / checks`. Whichever name were baked in, the other population
+# would require a context nothing reports — which does not fail their PRs, it hangs them PENDING
+# FOREVER. So the context is added by apply-rulesets.sh, from the local checks.yml, like ci and
+# template-tests already are.
+assert_eq "" "$contexts" "$REPO_RULESET bakes in NO status-check context (apply-rulesets.sh adds it)"
 # And the job that reports it must actually be there, under exactly that key.
 if grep -A1 '^jobs:' .github/workflows/checks.yml | tail -1 | grep -q '^  checks:$'; then
   pass "checks.yml declares the job key the ruleset requires"

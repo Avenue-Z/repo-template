@@ -9,13 +9,37 @@ name: checks
 # minutes with no check weakened. Job COUNT is the cost driver here, not job duration — do not
 # "optimise" this by caching downloads; a 21s job and a 12s job bill exactly the same.
 #
-# The job key MUST stay literally `checks`. .github/rulesets/repo-ruleset.json requires the
-# status-check context "checks" (BAKED IN, because this workflow ships into every generated
-# repo). A required check that never reports does NOT fail a PR — it hangs it PENDING FOREVER
-# and nothing can be merged again. Renaming this job without repo-ruleset.json in the same
-# commit bricks every repo the ruleset was applied to.
+# The job key MUST stay literally `checks`. It is NOT baked into repo-ruleset.json: that file is
+# shared by every shape this file can take, so scripts/apply-rulesets.sh decides the context to
+# require by reading THIS workflow at apply time — `checks` when it declares `workflow_call`
+# (repo-template itself, or a self-contained rollback copy), `checks / checks` when the `checks`
+# job is a CALLER (every generated repo, today). Renaming the job here changes the second half of
+# that string for every consumer already requiring `checks / checks` — and editing
+# repo-ruleset.json in the same commit does NOTHING about it: that file lives in repo-template,
+# while each consumer's own ruleset was set by its OWN past run of apply-rulesets.sh against its
+# OWN checks.yml, and stays exactly as it was until someone re-runs it there. A required check
+# that never reports does NOT fail a PR — it hangs it PENDING FOREVER and nothing can be merged
+# again. Renaming this job means re-running apply-rulesets.sh in every consumer repo before (or
+# atomically with) cutting the tag that carries the rename — not editing a file in this repo.
 
 on:
+  # CONSUMERS CALL THIS. `workflow_call` alongside `pull_request` is the standard shape for a workflow
+  # that is both a consumable and a live gate in its own repo, and both halves are load-bearing:
+  #
+  #   without workflow_call  -> the 11 derived repos cannot reach this file at all and stay frozen.
+  #   without pull_request   -> init-repo.sh's generated repos would ship a workflow with NO TRIGGERS.
+  #                             It would never run, enforce nothing, emit no annotation, and appear in
+  #                             the Actions tab as a workflow with no runs. Silent, total, and green.
+  #
+  # It also keeps THIS repo's own context literally `checks`: pull_request runs are ordinary top-level
+  # jobs, not calls, so only consumers see the renamed `checks / checks`. scripts/apply-rulesets.sh
+  # decides which of the two to require, from this very block.
+  #
+  # No inputs and no secrets, deliberately. Adding either moves the consumer-visible surface —
+  # .github/reusable-contract.json is the golden and template-tests/test_reusable_contract.sh is the
+  # tripwire. See the spec, §1 and §4.
+  workflow_call:
+
   # `edited` came from guard-base-branch and is load-bearing: a PR retargeted at a new base must
   # be re-judged, and `edited` is the only event that fires on a base change. The rest are the
   # pull_request default set.
@@ -57,46 +81,97 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      # ---------------------------------------------------------------- trusted scripts
-      # Check out the BASE branch, not the PR's head, and take the guard's decision logic from
-      # it. Otherwise the guard (scripts/check-base-branch.sh) is supplied by the very PR it is
-      # judging: a PR from wip/x -> main that also rewrote check-base-branch.sh to `exit 0`
-      # would pass its own guard, and with required_approving_review_count: 0 nobody has to look.
-      #
-      # It lands in a subdirectory that is DELETED before any scanner runs. That is not tidiness:
-      # osv-scanner walks the filesystem (`scan -r ./`), so a base-branch tree left lying inside
-      # the workspace would get scanned too — and a PR whose whole purpose is to FIX a vulnerable
-      # dependency would still fail sca on the copy of the old manifest.
-      #
-      # This does NOT fully close the hole, and the docs must not pretend otherwise: Actions
-      # still reads THIS WORKFLOW FILE from the PR head, so a PR that rewrites checks.yml itself
-      # can still neuter all three gates. That is why .github/ must be code-owned. Stated plainly
-      # in SECURITY.md and the spec's enforcement table.
-      - name: Checkout the base branch (the guard must not be supplied by the PR it guards)
-        if: github.event_name == 'pull_request'
+      # ---------------------------------------------------------------- the tree under review
+      # First, because everything below either scans it or stages alongside it. fetch-depth: 0 for two
+      # reasons, both inherited from secret-scan.yml: the audit path scans all of history, and the PR
+      # path needs origin/<base> present locally to diff against.
+      - name: Checkout the tree under review
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.base_ref }}
-          persist-credentials: false
-          path: .trusted-base
+          fetch-depth: 0
 
-      # ci-aggregate-gate.sh is staged here for the SAME reason check-base-branch.sh is, and the
-      # reason is new to this merged design. When the three gates were three jobs, each reported
-      # its own check and there was no shared verdict to attack. Now a single script decides
-      # whether the job goes red. If that script came from the PR's own tree, a PR could rewrite
-      # it to `exit 0` and neuter the guard, the secret scan and the SCA gate in one line —
-      # re-opening precisely the hole the base checkout above exists to close. So the verdict
-      # logic is taken from the protected branch too, and kept in RUNNER_TEMP, which is OUTSIDE
-      # GITHUB_WORKSPACE and therefore survives the re-checkout below and is never scanned.
-      - name: Stage the trusted scripts outside the workspace
-        if: github.event_name == 'pull_request'
+      # ---------------------------------------------------------------- trusted scripts
+      # WHERE THE GATE SCRIPTS COME FROM, AND WHY IT IS NOT THE WORKSPACE.
+      #
+      # These three scripts make every decision this job reports. If they came from the PR's own tree,
+      # a PR could rewrite one to `exit 0` and neuter the guard, the secret scan and the SCA gate in
+      # one line — and with required_approving_review_count: 0 nobody has to look.
+      #
+      # TWO PATHS, because one size is wrong for both populations:
+      #
+      #   a CONSUMER -> the template, at the ref THIS WORKFLOW WAS CALLED AT. That is
+      #                 github.job_workflow_ref (e.g. Avenue-Z/repo-template/.github/workflows/
+      #                 checks.yml@refs/tags/v1.2.0), NOT github.workflow_ref, which is the CALLER's
+      #                 workflow and would stage the consumer's own tree straight back into the job.
+      #                 Deriving it rather than hardcoding `ref: v1` is what makes the immutable point
+      #                 tags a real rollback: pinned to @v1.2.0, you get v1.2.0's scripts.
+      #
+      #   repo-template ITSELF -> the workspace. Two reasons, both decisive. Bootstrap: this repo's
+      #                 PRs cannot check out a tag that Phase A has not cut yet, or the PR that cuts
+      #                 it is red on its own account. And a PR that CHANGES a gate script must be
+      #                 exercised by the run reviewing it, rather than judged by the released copy of
+      #                 the script it is replacing.
+      #
+      # The cost of the second path is real and is recorded in the spec's Open items: on this repo's
+      # own PRs the guard is again supplied by the PR it judges. template-tests runs on the same PR
+      # and test_guard_matrix.sh asserts the matrix directly, so an `exit 0` rewrite turns a REQUIRED
+      # context red — but a PR that edits the script and its suite together defeats that.
+      - name: Resolve where the gate scripts come from
+        id: scripts_src
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
         run: |
           set -euo pipefail
+          if [ "${GITHUB_REPOSITORY}" = "Avenue-Z/repo-template" ]; then
+            echo "local=true" >> "${GITHUB_OUTPUT}"
+            echo "::notice::gate scripts: this is repo-template — using the workspace copy"
+          else
+            # An empty job_workflow_ref here means we are not running as a called workflow in a repo
+            # that is not the template, which should be impossible. Refuse rather than guess a ref:
+            # guessing means staging SOMETHING and reporting a verdict from it.
+            [ -n "${JOB_WORKFLOW_REF:-}" ] || {
+              echo "::error::github.job_workflow_ref is empty and this is not repo-template — refusing to stage gate scripts from an unknown ref"; exit 1; }
+            echo "local=false" >> "${GITHUB_OUTPUT}"
+            echo "ref=${JOB_WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
+            echo "::notice::gate scripts: staging from Avenue-Z/repo-template@${JOB_WORKFLOW_REF##*@}"
+          fi
+
+      # actions/checkout's `path:` is documented as a path UNDER GITHUB_WORKSPACE and it will not
+      # write outside it, so this cannot land directly in RUNNER_TEMP. Hence the subdirectory, the
+      # `install` below, and the `rm -rf` — the same three-step shape the base-branch checkout used,
+      # with only its source changed.
+      - name: Check out the template at the ref this workflow was called at
+        if: steps.scripts_src.outputs.local == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Avenue-Z/repo-template
+          ref: ${{ steps.scripts_src.outputs.ref }}
+          persist-credentials: false
+          path: .trusted-template
+
+      - name: Stage the trusted scripts outside the workspace
+        env:
+          # Via env, not interpolated into the script body. This file states the rule and the
+          # reason elsewhere too: `${{ }}` inside a `run:` is textual substitution, not a shell
+          # variable. This particular value is derived from GITHUB_REPOSITORY and is not
+          # attacker-influenced, but a file that keeps the rule everywhere is the one where a
+          # violation stands out.
+          LOCAL_SRC: ${{ steps.scripts_src.outputs.local }}
+        run: |
+          set -euo pipefail
+          src=scripts
+          [ "${LOCAL_SRC}" = "true" ] || src=.trusted-template/scripts
           mkdir -p "${RUNNER_TEMP}/trusted-scripts"
-          install -m 0755 .trusted-base/scripts/check-base-branch.sh  "${RUNNER_TEMP}/trusted-scripts/"
-          install -m 0755 .trusted-base/scripts/ci-aggregate-gate.sh "${RUNNER_TEMP}/trusted-scripts/"
-          # Delete it BEFORE anything scans the workspace (see the step above).
-          rm -rf .trusted-base
+          for s in check-base-branch.sh sca-gate.sh ci-aggregate-gate.sh; do
+            [ -f "${src}/${s}" ] || { echo "::error::${src}/${s} is missing — refusing to run a gate with no script"; exit 1; }
+            install -m 0755 "${src}/${s}" "${RUNNER_TEMP}/trusted-scripts/"
+          done
+          # RUNNER_TEMP is outside GITHUB_WORKSPACE, so the staged copies survive and are never
+          # scanned. The SOURCE directory is not: osv-scanner walks the filesystem (`scan -r ./`), so
+          # a second tree left inside the workspace gets scanned too — and a PR whose whole purpose is
+          # to FIX a vulnerable dependency would still fail on the staged copy's old manifest. Delete
+          # it here, BEFORE any scanner runs. Do not move this line down.
+          rm -rf .trusted-template
 
       # ---------------------------------------------------------------- gate 1: base branch
       # continue-on-error is what turns a failing GATE into a recorded outcome instead of an
@@ -115,15 +190,6 @@ jobs:
           set -euo pipefail
           echo "PR: ${HEAD_REF} -> ${BASE_REF}"
           "${RUNNER_TEMP}/trusted-scripts/check-base-branch.sh" "${HEAD_REF}" "${BASE_REF}"
-
-      # ---------------------------------------------------------------- the tree under review
-      # Now the PR's own tree, which is what the two scanners are supposed to look at.
-      # fetch-depth: 0 for two reasons, both inherited from secret-scan.yml: the push path scans
-      # all of history, and the PR path needs origin/<base> present locally to diff against.
-      - name: Checkout the tree under review
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
       # ---------------------------------------------------------------- gate 2: secrets
       - name: install gitleaks
@@ -224,7 +290,7 @@ jobs:
             0|1|128) ;;
             *) echo "::error::osv-scanner exited ${rc} (not a findings/no-package code) — failed scan, refusing to report a clean check"; exit "${rc}" ;;
           esac
-          scripts/sca-gate.sh osv.json .github/sca-policy.json
+          "${RUNNER_TEMP}/trusted-scripts/sca-gate.sh" osv.json .github/sca-policy.json
 
       # ---------------------------------------------------------------- the verdict
       # `if: always()` is load-bearing: without it this step is SKIPPED the moment an earlier
@@ -247,15 +313,11 @@ jobs:
           SCA_RESULT: ${{ steps.sca.outcome }}
         run: |
           set -euo pipefail
-          # On pull_request the trusted, base-branch copy is the ONLY acceptable source (see the
-          # staging step). On a scheduled run there is no base checkout and no need for one: cron
-          # fires on the DEFAULT branch, so the workspace copy IS the protected branch's copy.
+          # The trusted, staged copy is the ONLY acceptable source, on every event. A workspace
+          # fallback would let a PR supply its own verdict logic, and in a consumer it would break the
+          # weekly audit outright once Phase E deletes the local copies.
           GATE="${RUNNER_TEMP}/trusted-scripts/ci-aggregate-gate.sh"
-          if [ "${EVENT}" = "pull_request" ]; then
-            [ -x "${GATE}" ] || { echo "::error::the trusted verdict script is missing — refusing to report a verdict"; exit 1; }
-          else
-            GATE=scripts/ci-aggregate-gate.sh
-          fi
+          [ -x "${GATE}" ] || { echo "::error::the trusted verdict script is missing — refusing to report a verdict"; exit 1; }
 
           args=( "secret-scan:${SECRET_SCAN_RESULT}" "sca:${SCA_RESULT}" )
           [ "${EVENT}" != "pull_request" ] || args+=( "guard-base-branch:${GUARD_RESULT}" )

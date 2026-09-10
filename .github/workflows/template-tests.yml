@@ -113,3 +113,27 @@ jobs:
           done
           [ "$failed" -eq 0 ] || exit 1
           echo "all suites passed"
+
+  # LAYER 2 OF THE v1 GATE (spec §4). The bash suite above proves the gate SCRIPTS decide correctly.
+  # It cannot prove the WORKFLOW is callable — a reusable workflow with a malformed `on: workflow_call`
+  # block, a bad `uses:` path or an undeclared input fails at expansion, before any script runs.
+  #
+  # IT LIVES HERE, not in its own workflow file, deliberately. advance-v1.yml chains off the
+  # `template-tests` workflow RUN, so anything outside this file does not gate the tag, and v1 could
+  # advance carrying a workflow nobody can call.
+  #
+  # PUSH ONLY. On pull_request this would be one extra billed job on every PR in every repo, and job
+  # count is the bill. Be honest about what that costs in coverage: on a push event the called
+  # workflow takes its non-PR path, so this proves the workflow RESOLVES, EXPANDS and RUNS GREEN — it
+  # does not exercise the base-branch guard or the PR-scoped secret scan. The suite above covers those.
+  #
+  # `if:` is permitted on a `uses:` job. `continue-on-error` is NOT — learned the hard way in
+  # data-contract's gate-selftest.yml — which is why this is a happy-path test by construction and
+  # cannot assert "this call failed and that is fine".
+  #
+  # A same-repo self-call also cannot prove CROSS-REPO ref resolution: a correct and a broken
+  # job_workflow_ref resolve the same valid ref from inside this repo. That is layer 4, and Phase B
+  # covers it once, by hand, on data-warehouse.
+  self-call:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/checks.yml

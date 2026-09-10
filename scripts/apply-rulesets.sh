@@ -95,6 +95,44 @@ add_context() { # <context> <workflow-file> <why-it-matters>
     info "no $2 — not requiring '$1' ($3)"
   fi
 }
+# The `checks` context is NOT baked into repo-ruleset.json, because that file is shared across
+# every shape checks.yml can take, and they do not all report the same context name. There are
+# THREE shapes, not two:
+#
+#   1. repo-template itself -> checks.yml IS the reusable workflow (`workflow_call:`). Its
+#      pull_request runs are ordinary top-level jobs, so the context is literally `checks`.
+#   2. a generated repo, normally -> checks.yml is a CALLER: the `checks` job's only key is
+#      `uses:`. A called job's context is `<caller-job> / <called-job>`, so this reports
+#      `checks / checks`.
+#   3. a self-contained copy -> no `workflow_call:`, and the `checks` job has no `uses:` either
+#      (it has its own `runs-on:`/`steps:`, same as shape 1). This is the documented migration
+#      ROLLBACK path — every one of the ~11 fleet repos holds exactly this shape today — and it
+#      reports plain `checks`, the same as shape 1.
+#
+# Keying the second branch on the ABSENCE of `workflow_call` (rather than the PRESENCE of `uses:`)
+# used to fold shape 3 into shape 2 and require `checks / checks` on a checks.yml that actually
+# reports `checks` — on a repo with live rulesets that hangs every PR PENDING FOREVER. Requiring
+# the wrong context never fails a PR outright; it just never reports and nothing merges again.
+# `workflow_call` and the job's own `uses:` are the discriminators, not a guess, because
+# template-tests/test_reusable_contract.sh asserts the former is present in repo-template and
+# template-tests/test_apply_rulesets.sh exercises all three shapes directly.
+job_has_uses() { # <workflow-file> -- true if the 'checks' job's own key is 'uses:' (shape 2)
+  awk '
+    /^  checks:$/ { injob=1; next }
+    injob && /^  [^ ]/ { injob=0 }
+    injob && /^    uses:/ { found=1 }
+    END { exit !found }
+  ' "$1"
+}
+if [ ! -f .github/workflows/checks.yml ]; then
+  info "no .github/workflows/checks.yml — not requiring any 'checks' context"
+elif grep -qE '^ *workflow_call:' .github/workflows/checks.yml; then
+  add_context 'checks'          .github/workflows/checks.yml "this checks.yml IS the reusable workflow"
+elif job_has_uses .github/workflows/checks.yml; then
+  add_context 'checks / checks' .github/workflows/checks.yml "this checks.yml is a caller; a called job reports '<caller>/<called>'"
+else
+  add_context 'checks'          .github/workflows/checks.yml "this checks.yml is a self-contained copy (the migration rollback path); it reports 'checks' directly"
+fi
 add_context ci             .github/workflows/ci.yml             "a required check with no workflow hangs every PR pending forever"
 add_context template-tests .github/workflows/template-tests.yml "this workflow is the template's own, and init-repo.sh removes it"
 info "required status checks:"

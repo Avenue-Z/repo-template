@@ -1,0 +1,7 @@
+{
+  "_comment": "THE CONSUMER-VISIBLE SURFACE OF checks.yml. Editing this file is the deliberate decision that the surface moved. template-tests/test_reusable_contract.sh asserts checks.yml matches it exactly, and .github/workflows/advance-v1.yml REFUSES to advance the v1 tag while this file differs from what v1 points at. See template-docs/specs/2026-09-09-reusable-workflows-design.md sections 1 and 4.",
+  "job": "checks",
+  "on": ["pull_request", "schedule", "workflow_call"],
+  "inputs": [],
+  "secrets": []
+}

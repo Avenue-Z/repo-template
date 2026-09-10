@@ -142,7 +142,8 @@ echo "sca workflow: it reads the policy and runs the gate as a step of the merge
 WF=.github/workflows/checks.yml
 assert_file "the SCA workflow exists" "$WF"
 wf="$(cat "$WF")"
-assert_match "checks.yml runs scripts/sca-gate.sh"           'scripts/sca-gate\.sh'      "$wf"
+assert_match "checks.yml runs sca-gate.sh from the trusted staging directory" \
+  'trusted-scripts/sca-gate\.sh' "$wf"
 assert_match "checks.yml references .github/sca-policy.json"  '\.github/sca-policy\.json' "$wf"
 assert_match "checks.yml is read-only (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
 # The SCA gate is a STEP now, so failing it does not fail the job on its own — continue-on-error
@@ -151,10 +152,19 @@ assert_match "checks.yml is read-only (permissions: contents: read)" 'contents:[
 assert_match "the sca step carries id: sca"            'id: sca'                    "$wf"
 assert_match "the verdict reads that step's outcome"   'steps\.sca\.outcome'       "$wf"
 assert_match "the verdict names sca as a gate"         'sca:\$\{SCA_RESULT\}'      "$wf"
-# osv-scanner walks the filesystem. If the base-branch checkout were left in the workspace it
+# osv-scanner walks the filesystem. If the template checkout were left in the workspace it
 # would be scanned too, and a PR that FIXES a vulnerable dependency would still fail on the old
-# manifest sitting in .trusted-base.
-assert_match "the base checkout is removed before anything scans the tree" 'rm -rf \.trusted-base' "$wf"
+# manifest sitting in .trusted-template.
+# The name of the directory is not the property worth asserting; the ORDER is. Assert that the
+# staging directory is deleted, and that the deletion appears BEFORE the first scanner step.
+assert_match "the template checkout is removed from the workspace" 'rm -rf \.trusted-template' "$wf"
+rm_line="$(grep -n 'rm -rf \.trusted-template' "$WF" | head -1 | cut -d: -f1)"
+scan_line="$(grep -n 'osv-scanner scan' "$WF" | head -1 | cut -d: -f1)"
+if [ -n "$rm_line" ] && [ -n "$scan_line" ] && [ "$rm_line" -lt "$scan_line" ]; then
+  pass "the staging directory is deleted BEFORE osv-scanner walks the workspace"
+else
+  fail "rm -rf .trusted-template (line ${rm_line:-none}) must come before osv-scanner (line ${scan_line:-none}) — otherwise a PR that FIXES a vulnerable dependency still fails on the staged copy's manifests"
+fi
 
 # --- the stated boundary and the auto-remediation step are documented (not just in the plan) ---
 echo "docs: the SCA tier boundary and the auto-remediation step are recorded"

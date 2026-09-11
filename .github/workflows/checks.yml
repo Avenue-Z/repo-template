@@ -39,6 +39,16 @@ on:
   # .github/reusable-contract.json is the golden and template-tests/test_reusable_contract.sh is the
   # tripwire. See the spec, §1 and §4.
   workflow_call:
+    # DELIBERATE, TEMPORARY, AND REVERTED IMMEDIATELY. This input exists to move the consumer-visible
+    # surface once, on purpose, so that advance-v1.yml's refusal can be OBSERVED in production rather
+    # than assumed from a unit test. See Phase A Task 10 Step 5. It is additive (it has a default), so
+    # no caller is affected while it is here.
+    inputs:
+      probe:
+        description: 'no-op; exists only to prove the v1 tripwire refuses a moved contract'
+        type: string
+        required: false
+        default: ''
 
   # `edited` came from guard-base-branch and is load-bearing: a PR retargeted at a new base must
   # be re-judged, and `edited` is the only event that fires on a base change. The rest are the

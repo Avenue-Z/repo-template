@@ -35,11 +35,20 @@ on:
         description: 'SHA on main to advance v1 to — for an ADDITIVE contract change, or a templates/ advisory blocking the tag'
         required: true
 
-# The only elevated permission in this design, and it exists solely to move a tag. The v1 tag ruleset
-# carries the GitHub Actions app as its one bypass actor, or this write is refused by the ruleset
-# regardless of the token's permissions.
+# GITHUB_TOKEN GETS READ ONLY. The tag push authenticates as a dedicated GitHub App instead.
+#
+# The v1 tag ruleset refuses a non-fast-forward push from everyone but its one bypass actor, and
+# GitHub Actions CANNOT BE THAT ACTOR: the API rejects app 15368 with "Actor GitHub Actions
+# integration must be part of the ruleset source or owner organization", because GitHub Actions is
+# not an installable app and never appears in an org's installations. So `contents: write` on
+# GITHUB_TOKEN would buy nothing here — the ruleset would refuse the push regardless of what the
+# token is permitted to do.
+#
+# This is also what keeps the bypass WORKFLOW-scoped rather than repo-scoped: no other workflow in
+# this repo can move v1 by requesting `contents: write`, because that permission is not what the
+# ruleset honours. The app's private key is the only credential that moves the tag.
 permissions:
-  contents: write
+  contents: read
 
 # Two closely-spaced merges would otherwise race: if the OLDER run's tag push finishes LAST, v1 moves
 # BACKWARD and the fleet silently runs a stale gate with no red check anywhere. cancel-in-progress is
@@ -58,10 +67,23 @@ jobs:
       # the second one's tip in the workspace while the FIRST one's result is what succeeded — and v1
       # would be moved onto a commit template-tests never ran against. Pin it explicitly.
       # fetch-depth: 0 is not decoration: the decision below needs history and tags.
+      # THE BYPASS CREDENTIAL. Minted per run and valid for an hour, so nothing long-lived is stored
+      # anywhere — the app's private key is the only secret at rest, and it is the single thing the
+      # v1 tag ruleset will accept a force-push from.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.V1_TAG_APP_ID }}
+          private-key: ${{ secrets.V1_TAG_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.acknowledge-contract-change || github.event.workflow_run.head_sha }}
           fetch-depth: 0
+          # persist-credentials defaults to true, so the `git push` steps below reuse THIS token.
+          # Drop this line and the push silently falls back to GITHUB_TOKEN — which the ruleset
+          # refuses, turning every advance red for a reason that reads like a permissions bug.
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: decide whether v1 may advance
         id: decide

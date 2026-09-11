@@ -1404,14 +1404,35 @@ the trap is only reachable if someone back-dates the tag.
 
 - [ ] **Step 3: Protect the tag, with the one bypass actor that keeps the advance working**
 
-Look the GitHub Actions app's id up rather than typing one from memory:
+**This step was written against a mechanism that does not exist, and is corrected here.** The original
+text said to look up the GitHub Actions app via `gh api /repos/.../installation` and name it as an
+`Integration` bypass actor. Two things are wrong with that: the endpoint needs a **GitHub App JWT**, so
+it 401s for a user token; and the GitHub Actions app (id `15368`, resolvable via `gh api
+/apps/github-actions`) **is refused by the rulesets API**:
 
-```bash
-gh api /repos/Avenue-Z/repo-template/installation -q '.app_id, .app_slug'
+```
+Actor GitHub Actions integration must be part of the ruleset source or owner organization
 ```
 
-Then create the ruleset. It targets `refs/tags/v1` **exactly** — the immutable `v1.N.0` point tags fall
-outside it, so nothing blocks their creation:
+GitHub Actions is not an installable app — it never appears in `gh api /orgs/Avenue-Z/installations` —
+so it cannot be a bypass actor on any ruleset. The bypass is a **dedicated GitHub App** instead, which
+is what `advance-v1.yml` now authenticates as.
+
+**Prerequisite, and it needs an org owner.** Create a GitHub App in `Avenue-Z` with **Repository
+permissions → Contents: Read and write**, install it on `repo-template` only, generate a private key,
+and store both as repository secrets:
+
+| Secret | Value |
+|---|---|
+| `V1_TAG_APP_ID` | the app's numeric id |
+| `V1_TAG_APP_PRIVATE_KEY` | the generated `.pem`, whole file including the header and footer lines |
+
+Then read the app's id back, and create the ruleset. It targets `refs/tags/v1` **exactly** — the
+immutable `v1.N.0` point tags fall outside it, so nothing blocks their creation:
+
+```bash
+gh api /orgs/Avenue-Z/installations -q '.installations[] | "\(.app_id)\t\(.app_slug)"'
+```
 
 ```bash
 gh api -X POST repos/Avenue-Z/repo-template/rulesets --input - <<'RULESET'
@@ -1421,17 +1442,20 @@ gh api -X POST repos/Avenue-Z/repo-template/rulesets --input - <<'RULESET'
   "enforcement": "active",
   "conditions": { "ref_name": { "include": ["refs/tags/v1"], "exclude": [] } },
   "bypass_actors": [
-    { "actor_id": <APP_ID_FROM_STEP_ABOVE>, "actor_type": "Integration", "bypass_mode": "always" }
+    { "actor_id": <THE_NEW_APP_ID>, "actor_type": "Integration", "bypass_mode": "always" }
   ],
   "rules": [ { "type": "deletion" }, { "type": "non_fast_forward" } ]
 }
 RULESET
 ```
 
-`bypass_actors: []` is this repo's house pattern and is **wrong here**: a ruleset applies to
-`GITHUB_TOKEN` like any other actor, so an empty list would block the advance workflow from moving the
-tag regardless of its `contents: write`. The residual — that the bypass is repo-scoped, so any workflow
-in this repo requesting `contents: write` inherits it — is recorded in the spec's Open items.
+`bypass_actors: []` is this repo's house pattern and is **wrong here**: a ruleset applies to every
+actor, so an empty list would block the advance workflow from moving the tag no matter what its token
+is permitted to do. The one thing that changed from the original reasoning is *which* actor — and the
+correction is an improvement, not a workaround. Under the old design the bypass was **repo-scoped**:
+any workflow requesting `contents: write` inherited it. Under the app, `advance-v1.yml` drops
+GITHUB_TOKEN to `contents: read` and `contents: write` moves nothing. The residual moves to the
+secret, and is recorded in the spec's Open items.
 
 - [ ] **Step 4: Prove the protection is real, in both directions**
 

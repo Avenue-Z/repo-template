@@ -1075,11 +1075,22 @@ Recorded as open, not as decided:
    surface passes all three gating layers and auto-deploys on the next push to `main`. No mechanism
    here catches it. **Accepted risk**, reduced only by the `dev → staging → main` soak and by §1's
    clauses being written down.
-8. **The `v1` tag bypass is repo-scoped, not workflow-scoped** (§1). Adding the GitHub Actions app to
-   the tag ruleset's `bypass_actors` means any workflow in `repo-template` requesting `contents: write`
-   can move `v1`, not only the advance workflow. There would be exactly one such workflow, and adding a
-   second is a change to `.github/` on a PR. **Accepted** — and worth re-reading the moment
-   `.github/workflows/` grows a second writer.
+8. **The `v1` tag bypass is a dedicated GitHub App, and the residual is its secret** (§1). What this
+   item used to accept — a repo-scoped bypass, where any workflow requesting `contents: write` could
+   move `v1` — **is moot, because the mechanism it described does not exist.** The rulesets API refuses
+   the GitHub Actions app as a bypass actor (`Actor GitHub Actions integration must be part of the
+   ruleset source or owner organization`): it is not an installable app and never appears in an org's
+   installations. The bypass is a dedicated app instead; `advance-v1.yml` mints a one-hour token from
+   its private key and GITHUB_TOKEN drops to `contents: read`. That is **strictly stronger** than the
+   original: `contents: write` no longer moves the tag, so a second writer in `.github/workflows/` is
+   no longer a concern.
+
+   **The residual moves to the secret.** Repository secrets are readable by any workflow in the repo,
+   so a workflow that names `V1_TAG_APP_PRIVATE_KEY` can mint the same token — and adding one is still
+   a change to `.github/` that has to pass the PR gate and reach `main`. The unpriced hardening is an
+   `advance-v1` **environment** holding the two secrets, with its deployment branches restricted to
+   `main`, which would make the credential unobtainable from a workflow running anywhere else.
+   **Accepted, with the environment recorded as the next step if this ever matters.**
 9. **Two inert scripts in every migrated consumer, until Phase E's cleanup** (§2).
    `check-base-branch.sh` and `sca-gate.sh` keep shipping through Phase E as the rollback path. Until
    they are deleted, editing either has no effect and produces no error — the drift trap this design

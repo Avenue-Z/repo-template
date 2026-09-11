@@ -2,7 +2,7 @@
 
 ## Branch flow
 
-    feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/*  →  dev  →  staging  →  main
+    feat/* | fix/* | docs/* | chore/* | ci/* | dependabot/* | perf/* | refactor/* | test/*  →  dev  →  staging  →  main
 
 - **`dev`** — integration branch. **Open your PR here.**
 
@@ -10,19 +10,23 @@
   most tooling) takes the **production** branch from the repository default, so a repo defaulting
   to `dev` would deploy every merged PR straight to production. The cost is that a PR opened in the
   GitHub UI targets `main` — **change the base to `dev`** with the dropdown next to the title, or
-  use `gh pr create --base dev`. If you forget, `guard-base-branch` fails the PR loudly; it re-runs
+  use `gh pr create --base dev`. If you forget, the `checks` job fails the PR loudly; it re-runs
   when you change the base.
 - **`staging`** — pre-prod soak / QA. Receives PRs from `dev` only.
 - **`main`** — production. Receives PRs from `staging` only.
 
-`guard-base-branch` fails any PR whose base is wrong for its head, and **fails closed on an
-unrecognized branch prefix**. Need a new prefix? Add it to the `case` statement in
-`scripts/check-base-branch.sh` (and to the matrix above) in a PR.
+The base-branch guard — the first step of the `checks` job — fails any PR whose base is wrong
+for its head, and **fails closed on an
+unrecognized branch prefix**. The matrix is enforced centrally and the guard's own error output is its
+authoritative statement — if this list and that message ever disagree, the message is right. Need a new
+prefix? Open a PR against `Avenue-Z/repo-template`.
 
-The guard reads its decision script from the **base** branch, so a PR cannot rewrite the rule it
-is being judged against. It cannot, however, defend against a PR that edits
-`.github/workflows/guard-base-branch.yml` itself — Actions runs the workflow file from the PR's
-head, and **nothing in this repo's configuration forces anyone to review that.** `CODEOWNERS`
+The three gate scripts are staged from `Avenue-Z/repo-template` at the ref `checks.yml` was
+**called at**, so in a repo that calls this workflow, a PR cannot supply them. In
+`repo-template` itself they come from the **workspace** instead — a deliberate trade-off, not an
+oversight; see `SECURITY.md` for why and what it costs. Either way, this cannot defend against a
+PR that edits `.github/workflows/checks.yml` itself — Actions runs the workflow file from the
+PR's head, and **nothing in this repo's configuration forces anyone to review that.** `CODEOWNERS`
 routes such a PR to a reviewer; it does not require their approval. Review any PR touching
 `.github/` by convention, and read `SECURITY.md` before assuming you are protected from one.
 
@@ -51,6 +55,15 @@ there is no one-liner to replay out of your shell history. It lists every repo i
 makes you type a challenge phrase that names the live repo count. If you find yourself wanting to
 automate it, that is the feeling the design is for.
 
+### Governance changes need a companion marketplace PR
+
+`Avenue-Z/claude-marketplace` ships the `repo-template-first` skill, which describes this repo's
+workflows and what a generated repo contains. It is a **third copy** of these conventions, after the
+template and the repos derived from it. Nothing syncs it automatically and nothing is going to: at this
+size a sync mechanism would cost more than the drift does. So it is a rule instead — **a PR that
+changes the governance workflows, the branch matrix, or what `init-repo.sh` generates opens a companion
+PR against `Avenue-Z/claude-marketplace` in the same sitting.**
+
 ## Commits
 
 `feat:` `fix:` `docs:` `chore:` `ci:` `test:` — imperative mood, one logical change.
@@ -59,5 +72,6 @@ automate it, that is the feeling the design is for.
 
 - `make check` passes — the correctness gate (lint + typecheck + tests, plus `build` on next).
   ci.yml runs the same target, so a green `make check` is the same gate the PR faces.
-- No credentials. `secret-scan` will fail the PR; a key that reached the remote is **burned and
+- No credentials. The `secret-scan` step of `checks` will fail the PR; a key that reached the
+  remote is **burned and
   must be rotated**, even if the PR is never merged. See SECURITY.md.

@@ -1,9 +1,27 @@
 # Only github-actions here: it is the one ecosystem the stack-agnostic core actually has.
 # scripts/init-repo.sh appends the pip OR npm block for the stack it selects.
+#
+# WHY THESE UPDATES ARE GROUPED, AND WHY THE INTERVAL IS MONTHLY.
+# Every Dependabot PR fires the full workflow set, and GitHub bills each job rounded UP to a
+# full minute. Ungrouped, Dependabot opened up to five separate PRs per ecosystem per week —
+# and Dependabot accounted for ~46% of all runs in the busiest repo. That is the single largest
+# source of billed minutes in this template, and none of it is compute: it is job count.
+#
+# `interval: monthly` delays VERSION updates only. Dependabot SECURITY updates are driven by
+# Dependabot alerts, not by this schedule, and are unaffected — a vulnerable action still gets
+# a PR the day the advisory lands. So this trades update latency for cost on routine bumps
+# without touching the security path.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
     target-branch: dev
     open-pull-requests-limit: 5
+    groups:
+      # One PR for everything that is not a major bump. Majors are deliberately left
+      # UNGROUPED: they are the ones that actually break, and a single broken major must not
+      # hold every other pending update hostage in a PR nobody can merge.
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

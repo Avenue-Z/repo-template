@@ -34,17 +34,7 @@
       "type": "required_status_checks",
       "parameters": {
         "strict_required_status_checks_policy": false,
-        "required_status_checks": [
-          {
-            "context": "guard-base-branch"
-          },
-          {
-            "context": "secret-scan"
-          },
-          {
-            "context": "sca"
-          }
-        ]
+        "required_status_checks": []
       }
     }
   ]

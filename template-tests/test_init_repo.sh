@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=template-tests/lib.sh disable=SC1091
 source "${REPO_ROOT}/template-tests/lib.sh"
+
+# This suite `git clone`s REPO_ROOT below, so it always drives the COMMITTED scripts/init-repo.sh.
+# An uncommitted edit to init-repo.sh is invisible to it — commit before re-running this suite to
+# see your change exercised. Two implementers lost time to this.
 
 # Build a throwaway clone so we never mutate the real template.
 WORK="$(mktemp -d)"
@@ -42,9 +47,48 @@ assert_no_file "the template's own test_sca.sh did not ship (it lives in templat
 # that repo's required checks, it would never report and hang every PR PENDING FOREVER.
 assert_no_file "template-tests.yml workflow removed (it runs a suite that no longer exists here)" .github/workflows/template-tests.yml
 # The workflows a generated repo SHOULD keep must survive the cull.
-assert_file    "guard-base-branch.yml survived" .github/workflows/guard-base-branch.yml
-assert_file    "secret-scan.yml survived" .github/workflows/secret-scan.yml
-assert_file    "sca.yml survived (core workflow, ships into generated repos)" .github/workflows/sca.yml
+# checks.yml SURVIVES, but INVERTED: a generated repo gets a nine-line CALLER, not a copy of the
+# 260-line gate. The copy is what froze 11 repos on the version they were born with.
+assert_file "checks.yml is present (as a caller)" .github/workflows/checks.yml
+gen_checks="$(cat .github/workflows/checks.yml)"
+assert_match "the generated checks.yml calls the template's reusable workflow" \
+  'uses: Avenue-Z/repo-template/\.github/workflows/checks\.yml@v1' "$gen_checks"
+# THE HALF THAT MATTERS. If init-repo.sh ever goes back to copying the file, the copy would carry
+# `on: workflow_call` — and a workflow whose ONLY trigger is workflow_call never runs in the repo it
+# sits in. It would enforce nothing, emit no error, and show an empty Actions tab. Asserting only
+# that the file exists is what would let that ship green.
+assert_nomatch "the generated checks.yml is NOT a copy of the reusable workflow" \
+  'workflow_call' "$gen_checks"
+assert_match "the caller still declares its own triggers (they cannot be inherited)" \
+  'pull_request' "$gen_checks"
+# STRUCTURAL, not another grep: scripts/apply-rulesets.sh hardcodes the literal 'checks / checks'
+# context for a caller (around its line 114), and nothing before this ties that string to the job
+# key init-repo.sh actually writes. Renaming the heredoc's job key (e.g. to 'gate') would still
+# satisfy every assert_match above — 'uses:', 'pull_request' and the absence of 'workflow_call'
+# are all still true — while every PR in every repo generated after that hangs PENDING FOREVER,
+# waiting on a 'checks / checks' context nothing reports. Parse the YAML and check the job KEY.
+gen_job_count_and_key="$(python3 - .github/workflows/checks.yml <<'PY'
+import json, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+jobs = list(d.get('jobs', {}) or {})
+print(json.dumps({"count": len(jobs), "key": jobs[0] if jobs else None}))
+PY
+)"
+assert_eq "1" "$(jq -r '.count' <<<"$gen_job_count_and_key")" \
+  "the generated caller declares exactly one job"
+assert_eq "checks" "$(jq -r '.key' <<<"$gen_job_count_and_key")" \
+  "the generated caller's job key is literally 'checks' (apply-rulesets.sh hardcodes 'checks / checks')"
+# Template-only artifacts must not ship. reusable-contract.json is the template's own golden file and
+# advance-v1.yml force-moves a tag; neither has any business in a generated repo.
+assert_no_file "the golden contract file did not ship" .github/reusable-contract.json
+assert_no_file "the v1 advance workflow did not ship" .github/workflows/advance-v1.yml
+# The three workflows checks.yml replaced must be GONE, not merely unreferenced. A generated repo
+# that shipped both would pay for the jobs twice over — the whole point of the merge — and would
+# report contexts the ruleset no longer requires.
+assert_no_file "guard-base-branch.yml is gone (merged into checks.yml)" .github/workflows/guard-base-branch.yml
+assert_no_file "secret-scan.yml is gone (merged into checks.yml)" .github/workflows/secret-scan.yml
+assert_no_file "sca.yml is gone (merged into checks.yml)" .github/workflows/sca.yml
+assert_file    "check-base-branch.sh survived (checks.yml stages it from the template, at the ref it was called at)" scripts/check-base-branch.sh
 assert_file    "sca-policy.json survived" .github/sca-policy.json
 assert_file    "sca-gate.sh survived" scripts/sca-gate.sh
 # Same class as the SCA scripts above: the generated python repo's required `ci` check runs both of

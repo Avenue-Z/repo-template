@@ -79,7 +79,7 @@ fi
 # ---------------------------------------------------------------------------------------
 # THE ORG RULESET MUST NOT REQUIRE STATUS CHECKS. It targets repository_name ~ALL — every
 # repo in Avenue-Z, ~64 of them, of which none was generated from this template and none has
-# guard-base-branch.yml or secret-scan.yml. A required check that never reports does not fail
+# checks.yml. A required check that never reports does not fail
 # a PR; it hangs it PENDING FOREVER. With enforcement:active and bypass_actors:[], one
 # `apply-org-ruleset.sh` would take push AND merge away from every repo in the org at once.
 #
@@ -97,8 +97,25 @@ fi
 
 echo "rulesets: required status check contexts match real workflow job keys"
 contexts=$(jq -r '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' "$REPO_RULESET" | sort)
-expected=$(printf 'guard-base-branch\nsca\nsecret-scan')
-assert_eq "$expected" "$contexts" "$REPO_RULESET required contexts == {guard-base-branch, sca, secret-scan}"
+# ONE context, not three. guard-base-branch, secret-scan and sca used to be three workflows,
+# three jobs and three required contexts; they are now three steps of the single `checks` job,
+# because GitHub bills each job rounded up to a full minute and all three finished in under ten
+# seconds. The context name and the job key in checks.yml must move together — a required
+# context whose job no longer exists hangs every PR PENDING FOREVER.
+# NO CONTEXT IS BAKED IN ANY MORE, and that is the fix for a collision, not a weakening.
+# repo-ruleset.json is ONE file applied to BOTH this repo and every generated repo
+# (apply-rulesets.sh:78, and its comment at :85-88). repo-template reports literally `checks`; a
+# migrated consumer reports `checks / checks`. Whichever name were baked in, the other population
+# would require a context nothing reports — which does not fail their PRs, it hangs them PENDING
+# FOREVER. So the context is added by apply-rulesets.sh, from the local checks.yml, like ci and
+# template-tests already are.
+assert_eq "" "$contexts" "$REPO_RULESET bakes in NO status-check context (apply-rulesets.sh adds it)"
+# And the job that reports it must actually be there, under exactly that key.
+if grep -A1 '^jobs:' .github/workflows/checks.yml | tail -1 | grep -q '^  checks:$'; then
+  pass "checks.yml declares the job key the ruleset requires"
+else
+  fail "checks.yml must declare a job keyed 'checks' — the ruleset requires that exact context"
+fi
 
 # ---------------------------------------------------------------------------------------
 # THE THREE FIELDS THAT SILENTLY DEFANG A RULESET. Each of these was, at some point in this

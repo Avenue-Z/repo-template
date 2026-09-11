@@ -69,9 +69,10 @@ if ! PLAN="$(gh api "orgs/${ORG}" -q .plan.name 2>&1)"; then
        Refusing to continue: guessing the plan wrong means either a false claim of protection
        or a bricked org. Fix the cause (gh auth status) and re-run."
 fi
-[ -n "${PLAN}" ] && [ "${PLAN}" != "null" ] \
-  || die "the ${ORG} plan came back empty — the token likely cannot read org details.
+if [ -z "${PLAN}" ] || [ "${PLAN}" = "null" ]; then
+  die "the ${ORG} plan came back empty — the token likely cannot read org details.
        Try: gh auth refresh -h github.com -s read:org"
+fi
 info "org plan: ${PLAN}"
 
 if [ "${PLAN}" = free ]; then

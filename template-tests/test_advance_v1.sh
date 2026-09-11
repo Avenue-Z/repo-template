@@ -28,17 +28,53 @@ assert_match "there is an explicit acknowledgement path for an additive change" 
 # `env: TARGET_SHA:` lines further down the file — deleting the checkout's entire `with: ref:` line
 # still leaves those, so that assertion passed against a file where the exact hazard the workflow's
 # own header spends five lines on was unguarded. Read the checkout step's OWN `with.ref` instead.
-echo "advance-v1: the checkout step's own ref (not merely the word somewhere in the file) is pinned"
-if python3 - "$WORKFLOW" <<'PY'
+# THE TAG PROTECTION AND THE TOKEN ARE ONE MECHANISM, so they are asserted together.
+#
+# `v1` carries a ruleset (deletion + non_fast_forward) and a ruleset applies to GITHUB_TOKEN like any
+# other actor, so the advance needs a bypass. The design's first attempt -- the GitHub Actions app
+# (id 15368) as an `Integration` bypass actor -- IS NOT AVAILABLE: the API rejects it with "Actor
+# GitHub Actions integration must be part of the ruleset source or owner organization", because
+# GitHub Actions is not an installable app and never appears in an org's installations. So the push
+# authenticates as a DEDICATED APP, which is the ruleset's one bypass actor.
+#
+# The half that is easy to lose later: GITHUB_TOKEN must NOT carry `contents: write` here. The app
+# token is what moves the tag; leaving write on GITHUB_TOKEN adds a second credential that looks like
+# it should work, and the next person debugging a failed advance will "fix" it by dropping the app
+# token and widening the bypass instead.
+#
+# Located by `uses:`, NOT by index. The previous form read steps[0] and broke the moment a step was
+# inserted ahead of the checkout -- which is exactly what the app token requires.
+echo "advance-v1: the checkout pins the tested commit and authenticates as the bypass app"
+if ! err="$(python3 - "$WORKFLOW" 2>&1 <<'PYCHK'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
-ref = d['jobs']['advance']['steps'][0].get('with', {}).get('ref', '')
-sys.exit(0 if 'workflow_run.head_sha' in ref else 1)
-PY
-then
-  pass "jobs.advance.steps[0].with.ref pins workflow_run.head_sha"
+job = d['jobs']['advance']
+steps = job['steps']
+
+tok = next((s for s in steps if s.get('id') == 'app-token'), None)
+if tok is None:
+    sys.exit("no step with id 'app-token' -- the tag push has no bypass credential")
+if not str(tok.get('uses', '')).startswith('actions/create-github-app-token@'):
+    sys.exit("the 'app-token' step must use actions/create-github-app-token")
+
+co = next((s for s in steps if str(s.get('uses', '')).startswith('actions/checkout@')), None)
+if co is None:
+    sys.exit("no actions/checkout step in the advance job")
+w = co.get('with', {})
+if 'workflow_run.head_sha' not in str(w.get('ref', '')):
+    sys.exit("the checkout's own with.ref must pin workflow_run.head_sha")
+if 'app-token' not in str(w.get('token', '')):
+    sys.exit("the checkout must persist the APP token, or the tag push authenticates as "
+             "GITHUB_TOKEN and the v1 ruleset refuses it")
+
+perms = job.get('permissions', d.get('permissions', {}))
+if isinstance(perms, dict) and perms.get('contents') == 'write':
+    sys.exit("GITHUB_TOKEN must not carry contents: write -- the app token moves the tag")
+PYCHK
+)"; then
+  fail "$err"
 else
-  fail "jobs.advance.steps[0].with.ref must pin workflow_run.head_sha"
+  pass "the checkout pins workflow_run.head_sha, persists the app token, and GITHUB_TOKEN has no contents: write"
 fi
 
 # Extract the decision block and drive it for real. Same idiom as test_checks_verdict.sh: the thing

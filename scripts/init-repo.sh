@@ -411,9 +411,15 @@ jobs:
     # id-token: write is what lets checks.yml find out which ref of the template it was called at. It
     # reads that from the OIDC token's `job_workflow_ref` claim, because the `github.job_workflow_ref`
     # expression context is empty in every run, called or not. Permissions are never ELEVATED along a
-    # reusable-workflow call chain, so the grant has to start here, in the caller. Drop it and the
-    # gate REFUSES on its first step rather than silently staging scripts from a guessed ref -- the
-    # right failure, but a failure: this repo would have no working security gate at all.
+    # reusable-workflow call chain, so the grant has to start here, in the caller.
+    #
+    # DROPPING IT DOES NOT PRODUCE A RED CHECK. Measured (avenue-z-ci-lab/adopter-private run
+    # 34709355618): checks.yml requests id-token: write, the caller grants none, and that is an
+    # ELEVATION -- so the run ends in `startup_failure` with ZERO jobs and the `checks / checks`
+    # context is never reported AT ALL. Where that context is required, the PR does not fail; it
+    # hangs PENDING FOREVER. Loud in the Actions tab, invisible on the PR. This is why the grant
+    # belongs in the migration PR that writes the caller, before apply-rulesets.sh runs anywhere
+    # the ruleset is live.
     permissions:
       contents: read
       id-token: write

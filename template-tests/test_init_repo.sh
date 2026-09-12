@@ -83,8 +83,11 @@ assert_eq "checks" "$(jq -r '.key' <<<"$gen_job_count_and_key")" \
 # context it used to read is empty in every run -- called or not (avenue-z-ci-lab, runs 34705802136
 # and 34705912086). Minting that token needs the permission, reusable-workflow permissions are never
 # ELEVATED along the call chain, and a `uses:` job takes its permissions from its own block and not
-# from the workflow-level one. So a caller that omits this gets a gate that REFUSES on its first
-# step -- fail-closed, which is right, and still a repo that init-repo.sh generated wrong.
+# from the workflow-level one. A caller that omits it does NOT get a red check: the called workflow
+# then requests more than the caller granted, which is an elevation, so the run ends in
+# `startup_failure` with zero jobs and `checks / checks` is never reported at all -- PENDING FOREVER
+# wherever it is required. Measured, run 34709355618. That is why this is asserted and not left to
+# the migration checklist.
 gen_caller_perms="$(python3 - .github/workflows/checks.yml <<'PY'
 import json, sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))

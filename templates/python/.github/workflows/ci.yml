@@ -2,8 +2,22 @@ name: ci
 
 on:
   pull_request:
+  # `main` ONLY, deliberately. A change walks feat -> dev -> staging -> main, so branches
+  # [dev, staging, main] build it SIX times per change: three PR runs, plus three push runs that
+  # re-build merge commits whose content was just built as the PR head. GitHub bills every job
+  # rounded up to a whole minute, and Avenue-Z ran out of Actions minutes org-wide.
+  #
+  # checks.yml already made this exact trade, and its comment records the same reasoning: it
+  # dropped push for a cron rather than "re-scan commits that had just been scanned as PR heads".
+  #
+  # main survives because a promotion merge that resolves a CONFLICT produces content no PR run
+  # ever saw. That is one job covering the one case, instead of three covering none.
+  #
+  # CHANGING THIS LATER COSTS A PR PER REPO. `workflow_call` propagates jobs and steps; it cannot
+  # propagate `on:`, because a called workflow does not define triggers for its consumers. What
+  # init-repo.sh copies in here is what that repo lives with until someone edits it by hand.
   push:
-    branches: [dev, staging, main]
+    branches: [main]
 
 # This job builds and tests; it never writes to the repo. Without this block it inherits
 # whatever the repo/org default GITHUB_TOKEN scope happens to be, which is often read-write.

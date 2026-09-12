@@ -145,7 +145,9 @@ wf="$(cat "$WF")"
 assert_match "checks.yml runs sca-gate.sh from the trusted staging directory" \
   'trusted-scripts/sca-gate\.sh' "$wf"
 assert_match "checks.yml references .github/sca-policy.json"  '\.github/sca-policy\.json' "$wf"
-assert_match "checks.yml is read-only (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
+# Not "read-only" any more: the staging step needs id-token: write to read its own ref out of the
+# OIDC token. contents is still read, which is what this gate is about -- it clones and scans.
+assert_match "checks.yml cannot write the repo (permissions: contents: read)" 'contents:[[:space:]]*read' "$wf"
 # The SCA gate is a STEP now, so failing it does not fail the job on its own — continue-on-error
 # records an outcome and the verdict step renders judgment. Both halves of that wiring have to
 # exist, or a real finding turns the step red in the log and the job still goes GREEN.

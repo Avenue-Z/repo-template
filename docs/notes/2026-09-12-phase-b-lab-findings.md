@@ -17,6 +17,7 @@ failure direction is the safe one.
 | #2 `actions/checkout` inside a called workflow resolves to the **caller** | **Yes — as the design assumed** | run `34708273212` |
 | #3 A consumer's default `GITHUB_TOKEN` can clone `Avenue-Z/repo-template` | **Yes** | run `34705640335` |
 | #4 `job_workflow_ref` is empty on a non-called run | **Yes on a non-called run — and empty on a CALLED one too** | runs `34705640335`, `34705912086` |
+| #5 What a caller missing `id-token: write` actually does | **`startup_failure`, no context reported — not a red check** | runs `34709355618`, `34709404243` |
 
 ## THE FINDING — §2's staging mechanism does not work as written
 
@@ -61,12 +62,56 @@ distinct from `workflow_ref`, which holds the caller's. Point-tag rollback there
 pinned at `@v1.2.0`, the claim reads `refs/tags/v1.2.0`.
 
 **Cost:** the caller must grant `permissions: id-token: write`. Like `on:`, that lives in the caller
-and can never propagate — but it lands in the same migration PR that writes the caller anyway, and a
-repo that omits it gets a gate that **refuses** rather than one that silently passes.
+and can never propagate — but it lands in the same migration PR that writes the caller anyway.
+
+**An earlier version of this line said a repo that omits it "gets a gate that refuses rather than one
+that silently passes." That was an assumption, it was wrong, and the real shape is worse — see the
+next section.**
 
 **Residual worth naming:** `id-token: write` lets the called workflow mint OIDC tokens for *any*
 audience, so every consumer hands the template a small privilege-escalation surface. First-party code,
 remote risk, but real.
+
+## THE COST IS NOT A REFUSAL — it is a check that stops reporting
+
+Measured after the fix was written, by dropping the grant on purpose in `adopter-private` and putting
+it back. **A caller that omits `id-token: write` does not get the refusal above. It gets nothing.**
+
+| Run | Caller grants | Result |
+|---|---|---|
+| `34709404243` | `contents: read` + `id-token: write` | `checks / checks` **success**, all three scanners ran |
+| `34709355618` | nothing (workflow-level `contents: read` only) | **`startup_failure`, zero jobs, no context reported at all** |
+
+`checks.yml` requests `id-token: write`; a caller granting less is an **elevation**, and permissions
+along a call chain can be maintained or reduced but never elevated. GitHub rejects that when it
+expands the call — *before* any job exists. So the run dies at startup, `checks / checks` is never
+reported, and the `gh api .../check-runs` listing for that SHA contains only `ci`.
+
+**A required check that never reports does not fail a PR. It hangs it PENDING FOREVER.** That is the
+exact failure mode §2 spends a page avoiding, reached by a different road: not a renamed context, an
+absent one. It is loud in the Actions tab and invisible on the PR.
+
+Two consequences for §3's ordering, both sharper than "put it in the migration PR":
+
+- On `data-contract` and `avenue-z-reporting-v2`, where rulesets are **live**, the grant must be
+  merged *before* `apply-rulesets.sh` requires `checks / checks` there. Getting that order wrong
+  bricks the repo rather than reddening a PR.
+- On the 9 private repos the ruleset is inert (established fact 2), so the same mistake is merely a
+  gate that never runs — which is what the fleet already has today, and is why it could go unnoticed.
+
+**The same rule caught `repo-template` itself.** `template-tests.yml`'s `self-call` job is a caller and
+is bound by it too. Adding the permission to `checks.yml` without adding it there killed the whole
+`template-tests` workflow at startup (run `34709475980`) — and `if: github.event_name == 'push'` did
+**not** save it, because the call is expanded before the condition is evaluated, so `pull_request`
+runs died as well, on a **required** check. If the self-call had been the only place this was wrong it
+would have been caught by CI; it is recorded here because the reasoning ("the `if:` means it only
+matters on push") is the plausible wrong answer.
+
+**Alternative not taken, worth knowing exists.** Dropping `checks.yml`'s `permissions:` block entirely
+would make the called workflow inherit the caller's grant, turning that startup failure into the
+graceful red refusal — at the price of giving this repo's own runs whatever the org-default
+`GITHUB_TOKEN` scope happens to be, which `checks.yml:74-79` deliberately closes. Recorded as a trade,
+not decided here.
 
 ## Options considered and not taken
 
@@ -107,6 +152,10 @@ fix should be proven before any Avenue-Z repo sees it.
 1. **Real per-job durations**, and therefore the §5 savings figure. Needs a large tree on a billed
    repo. Do **not** quote a savings number for `checks.yml` as established.
 2. **Layer 4's second half** — a *deliberately bad* PR going red **for the right reason** on a real
-   consumer. The good-PR path was reached but died at the staging bug before any scanner ran.
+   consumer. The good-PR path is now **closed**: with the fix pinned in, `adopter-private` PR #8 ran
+   `check-base-branch.sh`, gitleaks (1 commit, no leaks) and osv-scanner (176 packages,
+   `tier: client-facing`) and reported `checks / checks` green (run `34709404243`). The **bad**-PR
+   half is still untested — nothing has yet been observed going red for the right reason on a
+   consumer.
 3. **Avenue-Z's org Actions policy is unread** (`admin:org` scope needed). The lab runs default policy,
    so #3's "yes" is a yes *under default policy*.

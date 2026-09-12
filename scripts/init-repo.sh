@@ -404,6 +404,19 @@ jobs:
   # Renaming this job renames the check — and a required check that no longer reports does not fail
   # a PR, it hangs it PENDING FOREVER.
   checks:
+    # THE JOB-LEVEL BLOCK IS NOT REDUNDANT WITH THE WORKFLOW-LEVEL ONE ABOVE. A job's `permissions`
+    # REPLACES the workflow default rather than adding to it, so `contents: read` has to be restated
+    # here or the called workflow cannot clone this repo.
+    #
+    # id-token: write is what lets checks.yml find out which ref of the template it was called at. It
+    # reads that from the OIDC token's `job_workflow_ref` claim, because the `github.job_workflow_ref`
+    # expression context is empty in every run, called or not. Permissions are never ELEVATED along a
+    # reusable-workflow call chain, so the grant has to start here, in the caller. Drop it and the
+    # gate REFUSES on its first step rather than silently staging scripts from a guessed ref -- the
+    # right failure, but a failure: this repo would have no working security gate at all.
+    permissions:
+      contents: read
+      id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1
 CALLER
 info "wrote .github/workflows/checks.yml as a caller of repo-template@v1"

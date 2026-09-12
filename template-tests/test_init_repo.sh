@@ -78,6 +78,23 @@ assert_eq "1" "$(jq -r '.count' <<<"$gen_job_count_and_key")" \
   "the generated caller declares exactly one job"
 assert_eq "checks" "$(jq -r '.key' <<<"$gen_job_count_and_key")" \
   "the generated caller's job key is literally 'checks' (apply-rulesets.sh hardcodes 'checks / checks')"
+# THE CALLER MUST GRANT id-token: write, AND IT MUST BE ON THE JOB. checks.yml reads the ref it was
+# called at from the OIDC token's job_workflow_ref claim, because the `github.job_workflow_ref`
+# context it used to read is empty in every run -- called or not (avenue-z-ci-lab, runs 34705802136
+# and 34705912086). Minting that token needs the permission, reusable-workflow permissions are never
+# ELEVATED along the call chain, and a `uses:` job takes its permissions from its own block and not
+# from the workflow-level one. So a caller that omits this gets a gate that REFUSES on its first
+# step -- fail-closed, which is right, and still a repo that init-repo.sh generated wrong.
+gen_caller_perms="$(python3 - .github/workflows/checks.yml <<'PY'
+import json, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+print(json.dumps((d.get('jobs', {}).get('checks') or {}).get('permissions') or {}))
+PY
+)"
+assert_eq "write" "$(jq -r '."id-token" // "ABSENT"' <<<"$gen_caller_perms")" \
+  "the generated caller's 'checks' job grants id-token: write (checks.yml cannot read its ref without it)"
+assert_eq "read" "$(jq -r '.contents // "ABSENT"' <<<"$gen_caller_perms")" \
+  "the generated caller's 'checks' job still grants contents: read (a job block REPLACES the workflow one)"
 # Template-only artifacts must not ship. reusable-contract.json is the template's own golden file and
 # advance-v1.yml force-moves a tag; neither has any business in a generated repo.
 assert_no_file "the golden contract file did not ship" .github/reusable-contract.json

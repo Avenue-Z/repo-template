@@ -1144,12 +1144,22 @@ was right when written. It no longer holds:
 
 ### To decide before G starts — not decided here
 
-1. **Does `python-ci.yml` share `v1` with `checks.yml`, or get its own tag?** A shared `v1` means one
-   advance workflow and one tag ruleset, but `advance-v1`'s tripwire watches only `checks.yml`'s
-   contract, so it would need a second golden file — and a breaking change to either workflow would
-   force `v2` on both. A separate tag isolates them, at the cost of a second advance workflow, a second
-   tag ruleset and a second app bypass. The examples in this section say `@v1` for readability, not as a
-   decision.
+1. **Does `python-ci.yml` share `v1` with `checks.yml`, or get its own tag? — decided 2026-09-15: its
+   own tag.** Sharing would have bought one advance workflow, one set of point tags, and one ref per
+   repo. It was rejected because it couples the two workflows in the places that hurt:
+   - **Rollback.** A repo escaping a broken `python-ci.yml` by pinning `@v1.N.0` would also pin its
+     security gate back, losing every `checks.yml` fix since.
+   - **`v2`.** A breaking `python-ci.yml` change would force every repo to bump its governance caller
+     too, though the gate never changed.
+   - **Cadence.** CI changes are far more often clause-3 breaks than gate changes are: bumping a tool
+     the workflow pins, such as `bandit`, can flag existing code and turn green repos red with nothing in
+     them changed. Under a shared tag, each of those refusals would also stall propagation of security
+     fixes.
+
+   The cost is smaller than an earlier version of this item priced it. Both tags live in
+   `repo-template`; one tag ruleset can target both, with the same `avenue-z-v1-tag-advance` app as its
+   bypass; and the advance workflow can be parameterised rather than duplicated. The tag's name is the
+   G plan's to choose (e.g. `python-ci-v1`). The `@v1` in this section's examples is a placeholder.
 2. **The matrix trade-off in §5 — decided 2026-09-15: one Python version on PRs is accepted.** The cost
    stands as §5 states it: a break on an older version is caught after the PR, by someone no longer
    looking at that change. **Where the full matrix runs is still open.** §5 put it on pushes to `dev`,

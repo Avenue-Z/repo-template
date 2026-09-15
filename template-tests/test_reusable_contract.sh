@@ -12,8 +12,17 @@ GOLDEN=.github/reusable-contract.json
 # consumer-visible surface MOVED, and forces a human to say which it is — the same job the ShellCheck
 # gate does for lint discipline: convert a rule that lives in one maintainer's head into a red test.
 #
-# The three things a consumer can observe are the job key (it IS the context, as `<caller>/<called>`),
-# the triggers, and the declared inputs/secrets. Nothing else here is a contract.
+# The four things a consumer can observe are the job key (it IS the context, as `<caller>/<called>`),
+# the triggers, the declared inputs/secrets, and the permissions the `checks` job requests. Nothing else
+# here is a contract.
+#
+# PERMISSIONS ARE CONTRACT BECAUSE EVERY CALLER MUST GRANT THEM. Permissions along a reusable-workflow
+# call chain can be kept or reduced, never elevated, so a permission checks.yml newly requests is one
+# every existing caller lacks -- and that does not produce a red check. The call is refused when GitHub
+# expands it: startup_failure, zero jobs, no `checks / checks` context, and a required check that hangs
+# PENDING FOREVER. `id-token: write` went out as v1.4.0 exactly this way, unrefused, because this suite
+# did not look. What is recorded is the `checks` job's EFFECTIVE block: its own `permissions:` if it
+# has one (a job block REPLACES the workflow default), otherwise the workflow's.
 
 echo "reusable contract: the golden file and the workflow both exist"
 assert_file "the golden contract file exists" "$GOLDEN"
@@ -28,8 +37,11 @@ d = yaml.safe_load(open(sys.argv[1]))
 on = d.get('on', d.get(True)) or {}
 jobs = list(d.get('jobs', {}))
 call = (on.get('workflow_call') or {}) if isinstance(on, dict) else {}
+checks_job = d.get('jobs', {}).get('checks') or {}
+perms = checks_job['permissions'] if 'permissions' in checks_job else d.get('permissions')
 print(json.dumps({
     "job": jobs[0] if len(jobs) == 1 else "|".join(jobs),
+    "permissions": perms,
     "on": sorted(on) if isinstance(on, dict) else sorted(on if isinstance(on, list) else [on]),
     "inputs": sorted((call.get('inputs') or {})),
     "secrets": sorted((call.get('secrets') or {})),
@@ -42,7 +54,7 @@ echo "reusable contract: checks.yml matches the golden EXACTLY (additions includ
 assert_eq "$expected" "$actual" "the consumer-visible surface of checks.yml == .github/reusable-contract.json"
 
 # Spelled out separately so a failure names the thing that broke rather than printing two JSON blobs.
-echo "reusable contract: the three properties, individually"
+echo "reusable contract: the properties, individually"
 assert_eq "checks" "$(jq -r '.job' <<<"$actual")" "the job key is literally 'checks' (it IS the context)"
 assert_match "on: declares workflow_call (consumers call it)"  'workflow_call'  "$(jq -r '.on|join(" ")' <<<"$actual")"
 # This is the assertion that catches the silent-failure path a second time, from a different angle:
@@ -50,6 +62,10 @@ assert_match "on: declares workflow_call (consumers call it)"  'workflow_call'  
 # newly generated repo ships a workflow with no triggers that enforces nothing and reports nothing.
 assert_match "on: still declares pull_request (it guards repo-template itself)" 'pull_request' "$(jq -r '.on|join(" ")' <<<"$actual")"
 assert_match "on: still declares the weekly audit"             'schedule'       "$(jq -r '.on|join(" ")' <<<"$actual")"
+# Named on its own because it is the one permission the whole consumer path depends on: without it the
+# staging step cannot read the OIDC job_workflow_ref claim, and every consumer's gate refuses.
+assert_eq "write" "$(jq -r '.permissions."id-token" // "ABSENT"' <<<"$actual")" \
+  "the checks job requests id-token: write (callers must grant it; recorded in the golden as contract)"
 
 echo "reusable contract: the self-call gates the tag (layer 2 of the spec's §4)"
 TT=.github/workflows/template-tests.yml

@@ -43,8 +43,6 @@ else
   fail "checks.yml must contain a step with id: scripts_src"
 fi
 
-wf="$(cat "$WORKFLOW")"
-
 # THE REGRESSION ASSERTION. This is the one that would have stopped the fleet-wide outage, and it
 # is a string match on purpose: the defect is that a particular context read returns nothing at
 # runtime, which no amount of local execution can discover.
@@ -60,9 +58,19 @@ assert_nomatch "no step reads github.job_workflow_ref (that context is ALWAYS em
 # reduced along the call chain, never elevated — so a called workflow that declares only
 # `contents: read` REDUCES id-token to none and the claim can never be read, no matter what the
 # caller granted.
+# STRUCTURAL, for the same reason as above: the file explains this permission in prose, so a text
+# grep stays green with the live key deleted. Read the permissions the `checks` job actually gets —
+# its own block if it has one, otherwise the workflow's.
 echo "checks staging: the workflow declares the permission the token fetch requires"
-assert_match "checks.yml declares id-token: write" 'id-token:[[:space:]]*write' "$wf"
-assert_match "checks.yml still declares contents: read" 'contents:[[:space:]]*read' "$wf"
+perms="$(python3 - "$WORKFLOW" <<'PY'
+import json, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+job = d['jobs']['checks']
+print(json.dumps((job['permissions'] if 'permissions' in job else d.get('permissions')) or {}))
+PY
+)"
+assert_eq "write" "$(jq -r '."id-token" // empty' <<<"$perms")" "the checks job gets id-token: write"
+assert_eq "read" "$(jq -r '.contents // empty' <<<"$perms")" "the checks job still gets contents: read"
 
 # <msg> <expected-exit> ; env comes from the caller
 resolve() {
@@ -73,8 +81,7 @@ resolve() {
 }
 out_val() { sed -n "s/^$1=//p" "${RT}/out"; }
 
-# Build a JWT whose payload is real base64url: it carries `-` and `_` and needs `=` padding, which
-# is exactly what a naive `base64 -d` gets wrong.
+# Build a JWT the way the token endpoint does: base64url, padding stripped.
 mkjwt() { # <payload-json>
   python3 - "$1" <<'PY'
 import base64, sys
@@ -101,7 +108,15 @@ assert_match "the refusal names id-token: write so the caller can be fixed" \
   'id-token' "$(cat "${RT}/log")"
 
 echo "checks staging: a consumer reads the ref from the job_workflow_ref CLAIM"
-stub_token '{"job_workflow_ref":"Avenue-Z/repo-template/.github/workflows/checks.yml@refs/tags/v1.2.0","workflow_ref":"acme/app/.github/workflows/checks.yml@refs/heads/main"}'
+# The `sub` value is chosen for its ENCODING, not its meaning: it makes the payload carry `-` and `_`
+# and need one `=`, so the resolver's `tr` and padding are both load-bearing. A strict decoder (GNU
+# coreutils, i.e. every ubuntu runner) rejects it without them. BSD base64 on macOS accepts it anyway,
+# so this bites in CI, not on a laptop.
+happy='{"job_workflow_ref":"Avenue-Z/repo-template/.github/workflows/checks.yml@refs/tags/v1.2.0","workflow_ref":"acme/app/.github/workflows/checks.yml@refs/heads/main","sub":"repo:acme/app:ref:refs/heads/ps?IA~"}'
+happy_b64="$(mkjwt "$happy" | cut -d. -f2)"
+assert_match "the fixture payload really carries '-' and '_'" '-.*_|_.*-' "$happy_b64"
+assert_ok "the fixture payload really needs padding" [ $(( ${#happy_b64} % 4 )) -ne 0 ]
+stub_token "$happy"
 GITHUB_REPOSITORY=acme/app resolve "a valid claim resolves" 0
 assert_eq "false" "$(out_val local)" "a consumer sets local=false (stage from the template)"
 # The POINT of deriving the ref rather than hardcoding `ref: v1`: pinned at a point tag you get

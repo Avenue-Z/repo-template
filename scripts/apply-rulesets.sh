@@ -124,11 +124,46 @@ job_has_uses() { # <workflow-file> -- true if the 'checks' job's own key is 'use
     END { exit !found }
   ' "$1"
 }
+# A CALLER THAT DOES NOT GRANT id-token: write MUST NOT BE GIVEN A REQUIRED CONTEXT. checks.yml
+# requests that permission (it reads the ref it was called at from the OIDC job_workflow_ref claim),
+# so a caller that does not grant it is asking for an ELEVATION. That does not fail the job: the run
+# is a `startup_failure` with ZERO jobs, `checks / checks` never reports, and requiring it hangs every
+# PR PENDING FOREVER (measured: avenue-z-ci-lab/adopter-private run 34709355618). init-repo.sh writes
+# the grant for new repos; this catches a caller written by hand during migration.
+#
+# What counts is the `checks` job's EFFECTIVE grant: its own `permissions` block REPLACES the
+# workflow-level one, which applies only when the job has none. Comments are skipped, so prose that
+# mentions the grant cannot satisfy this. Like job_has_uses it reads block-style YAML at 2-space
+# indent, which is what init-repo.sh writes; any other spelling (flow style, write-all, quoting) is
+# refused — a loud local error, never a false pass.
+checks_job_grants_id_token() { # <workflow-file>
+  awk '
+    /^[ ]*#/ || /^[ ]*$/ { next }
+    /^permissions:/ { wf=1; next }
+    wf && /^[^ ]/ { wf=0 }
+    wf && /^  id-token:[ ]*write[ ]*(#.*)?$/ { wfgrant=1 }
+    /^  checks:$/ { injob=1; next }
+    injob && (/^[^ ]/ || /^  [^ ]/) { injob=0; jp=0 }
+    injob && /^    permissions:/ { jobblock=1; jp=1; next }
+    jp && /^    [^ ]/ { jp=0 }
+    jp && /^      id-token:[ ]*write[ ]*(#.*)?$/ { jobgrant=1 }
+    END { exit !(jobblock ? jobgrant : wfgrant) }
+  ' "$1"
+}
 if [ ! -f .github/workflows/checks.yml ]; then
   info "no .github/workflows/checks.yml — not requiring any 'checks' context"
 elif grep -qE '^ *workflow_call:' .github/workflows/checks.yml; then
   add_context 'checks'          .github/workflows/checks.yml "this checks.yml IS the reusable workflow"
 elif job_has_uses .github/workflows/checks.yml; then
+  checks_job_grants_id_token .github/workflows/checks.yml || die ".github/workflows/checks.yml is a caller, but its 'checks' job is not granted id-token: write.
+       Refusing to require 'checks / checks'. The reusable checks.yml requests that permission, and a
+       caller that does not grant it gets a startup_failure with ZERO jobs: the context never reports,
+       so every PR would hang PENDING FOREVER. Add this to the 'checks' job (a job-level block
+       REPLACES the workflow-level one, so contents: read has to be restated) and re-run:
+
+           permissions:
+             contents: read
+             id-token: write"
   add_context 'checks / checks' .github/workflows/checks.yml "this checks.yml is a caller; a called job reports '<caller>/<called>'"
 else
   add_context 'checks'          .github/workflows/checks.yml "this checks.yml is a self-contained copy (the migration rollback path); it reports 'checks' directly"

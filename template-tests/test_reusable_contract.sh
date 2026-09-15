@@ -66,7 +66,8 @@ self_call="$(python3 - "$TT" <<'PY'
 import json, sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 job = d.get('jobs', {}).get('self-call') or {}
-print(json.dumps({"uses": job.get('uses'), "if": job.get('if')}))
+print(json.dumps({"uses": job.get('uses'), "if": job.get('if'),
+                  "perms": job.get('permissions') or {}}))
 PY
 )"
 assert_eq "./.github/workflows/checks.yml" "$(jq -r '.uses' <<<"$self_call")" \
@@ -75,5 +76,17 @@ assert_eq "./.github/workflows/checks.yml" "$(jq -r '.uses' <<<"$self_call")" \
 # premise is that job COUNT is the bill.
 assert_eq "github.event_name == 'push'" "$(jq -r '.if' <<<"$self_call")" \
   "the self-call job's own 'if' restricts it to push (not just mentioned in a comment)"
+# THE SELF-CALL IS A CALLER AND IS BOUND BY EVERY RULE A CONSUMER'S CALLER IS. checks.yml requests
+# id-token: write (it reads its own ref from the OIDC job_workflow_ref claim); a caller granting less
+# is an ELEVATION, and that does not fail the JOB -- it fails the whole WORKFLOW at startup, with
+# zero jobs and no context reported. `if:` does not save it: the elevation is caught when the call is
+# expanded, before the condition is ever evaluated, so a PR that never runs the self-call still turns
+# the REQUIRED template-tests check into a startup_failure. Measured here: run 34709475980 died this
+# way on the very commit that added the permission to checks.yml.
+sc_perms="$(jq -c '.perms' <<<"$self_call")"
+assert_eq "write" "$(jq -r '."id-token" // "ABSENT"' <<<"$sc_perms")" \
+  "the self-call job grants id-token: write (checks.yml requests it; granting less kills the workflow at startup)"
+assert_eq "read" "$(jq -r '.contents // "ABSENT"' <<<"$sc_perms")" \
+  "the self-call job still grants contents: read (a job block REPLACES the workflow-level one)"
 
 finish

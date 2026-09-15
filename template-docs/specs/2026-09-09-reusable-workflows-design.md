@@ -1150,9 +1150,15 @@ was right when written. It no longer holds:
    force `v2` on both. A separate tag isolates them, at the cost of a second advance workflow, a second
    tag ruleset and a second app bypass. The examples in this section say `@v1` for readability, not as a
    decision.
-2. **The matrix trade-off in §5 is a product decision, not a default.** One Python version on PRs and
-   the full matrix on `dev` means a break on an older version is caught at the `dev` merge, by someone
-   no longer looking at that change.
+2. **The matrix trade-off in §5 — decided 2026-09-15: one Python version on PRs is accepted.** The cost
+   stands as §5 states it: a break on an older version is caught after the PR, by someone no longer
+   looking at that change. **Where the full matrix runs is still open.** §5 put it on pushes to `dev`,
+   but new repos no longer push-trigger on `dev` — their triggers are `pull_request` + `push: [main]`
+   (`repo-template#73`) — while the existing repos still push-trigger on all three branches. The
+   candidates are promotion PRs (base `staging` or `main`), which catch the break before it is
+   promoted, or pushes to `main`, which catch it only once it has shipped. `on:` cannot propagate (§2),
+   so `python-ci.yml` would have to choose from the event and base it is called with, not from triggers
+   it declares.
 3. **Callers of `python-ci.yml` will need `id-token: write` too**, if it stages scripts the way
    `checks.yml` does, and §1's clause 4 applies to it from its first tag. Its golden contract file should
    record the permissions it requests, which `checks.yml`'s does not yet (Open item 14).

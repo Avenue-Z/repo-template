@@ -820,9 +820,9 @@ PR-scoped secret scan. Layer 1 covers those. `if:` is permitted on a `uses:` job
 - `on:` declares `workflow_call`, `pull_request`, and `schedule`
 - the declared `inputs:` / `secrets:` sets match the golden **exactly** — additions included, not just
   removals
-- **not recorded: the `permissions:` the workflow requests.** That is caller-breaking surface too (§1
-  clause 4), and the tripwire cannot see it move — which is how `id-token: write` reached `v1`
-  unrefused. Open item 14.
+- the `permissions:` the `checks` job requests. **Added in `repo-template#82`**; before that the
+  tripwire could not see this caller-breaking surface move (§1 clause 4), which is how `id-token: write`
+  reached `v1` unrefused. Open item 14.
 
 Any change to the consumer-visible surface reddens the test. The author must then update the golden
 **in the same PR**, and *that edit is the deliberate "this is v2" decision* — visible in the diff,
@@ -1142,7 +1142,7 @@ was right when written. It no longer holds:
 | **G** | `python-ci.yml` reusable, with the §5 job-count reduction inside it, lab-proven and published behind a tag — before B |
 | ~~H~~ | Folded into B–E: each repo's migration PR carries both callers (§3) |
 
-### To decide before G starts — not decided here
+### Decisions before G starts
 
 1. **Does `python-ci.yml` share `v1` with `checks.yml`, or get its own tag? — decided 2026-09-15: its
    own tag.** Sharing would have bought one advance workflow, one set of point tags, and one ref per
@@ -1169,12 +1169,26 @@ was right when written. It no longer holds:
    promoted, or pushes to `main`, which catch it only once it has shipped. `on:` cannot propagate (§2),
    so `python-ci.yml` would have to choose from the event and base it is called with, not from triggers
    it declares.
-3. **Callers of `python-ci.yml` will need `id-token: write` too**, if it stages scripts the way
-   `checks.yml` does, and §1's clause 4 applies to it from its first tag. Its golden contract file should
-   record the permissions it requests, which `checks.yml`'s does not yet (Open item 14).
-4. **Where it is proven.** `avenue-z-ci-lab/adopter-private` is a `node` adoption — its SCA scan read a
-   `package-lock.json` — so G needs a Python `init-repo.sh` adoption in the lab: the same end-to-end
-   regression environment, one stack over.
+3. **Does the contract record permissions? — decided 2026-09-15: yes, for both workflows.** Callers of
+   `python-ci.yml` will need `id-token: write` too, if it stages scripts the way `checks.yml` does, and
+   §1's clause 4 applies to it from its first tag. So its golden contract file is born recording the
+   permissions it requests. `checks.yml`'s golden gains the same field in `repo-template#82` (Open
+   item 14).
+4. **Where it is proven — done 2026-09-15: `avenue-z-ci-lab/adopter-python`.** `adopter-private` is a
+   `node` adoption (its SCA scan read a `package-lock.json`), so G needed a Python one. `adopter-python`
+   is a private repo built exactly as a real adopter would be: `repo-template` at `main` (`71c548f`),
+   then `init-repo.sh python`. Its first PR is also **the first consumer run against the real `v1` tag**
+   (`adopter-private`'s green run was pinned at a branch): `checks / checks` green in 12s, with the gate
+   scripts staged from `refs/tags/v1` via the OIDC claim, and the generated `ci` green —
+   `test (3.11)`/`(3.12)`/`(3.13)` in 14–21s, the `ci` aggregate in 11s. It showed two further things.
+   One is Open item 15. The other is that **`init-repo.sh`'s own push of `main` started no `ci` run**,
+   despite `ci.yml` declaring `push: [main]`. That was not the trigger: the repo's workflows were
+   registered at 18:57:19Z, about fifty seconds *after* its first pushes at 18:56:29Z, and once they
+   were, a promotion merge to `main` ran the full matrix (run `35012268228`) while the promotion
+   pushes to `dev` and `staging` ran nothing — exactly `repo-template#73`'s shape. The cause is
+   inferred from that ordering, not proven. It costs nothing a real adopter needs, because the
+   initial `main` commit is identical to `dev`, and PR runs cover everything after it. But a brand-new
+   repo's first push is not evidence that its triggers work.
 
 ---
 
@@ -1292,8 +1306,21 @@ Recorded as open, not as decided:
     holds the job key, the triggers, and the input and secret sets. A new permission requested by
     `checks.yml` moves none of them, so `advance-v1` advances straight past a caller-breaking change —
     which is what happened with `id-token: write` in `v1.4.0`. The obvious fix is to add the requested
-    permissions to the golden file and to `test_reusable_contract.sh`. **Undecided, and worth doing
-    before G**, so that `python-ci.yml`'s contract is born with it rather than retrofitted.
+    permissions to the golden file and to `test_reusable_contract.sh`. **Decided and done in
+    `repo-template#82`**, before G, so that `python-ci.yml`'s contract is born with it rather than
+    retrofitted. Moving the golden is itself a contract change: the first `advance-v1` after #82 reaches
+    `main` refuses until it is acknowledged via `workflow_dispatch`.
+15. **The SCA half of `checks` scans nothing on a Python repo without a lockfile.** Observed on
+    `adopter-python`'s first PR: *"no osv-scanner report (no packages/lockfiles found) — nothing to
+    scan"*, and the gate passes. The python template ships `dependencies = []` and no lockfile or
+    `requirements*.txt`, so on a fresh adoption that is correct. But osv-scanner reads lockfiles and
+    requirements files, not `pyproject.toml` ranges, so **a real Python repo that declares its
+    dependencies only in `pyproject.toml` gets no dependency gate at all, and a green check that says
+    nothing.** Two consequences: Phase B's deliberately-bad-PR test cannot exercise SCA on a Python
+    adoption until the repo carries a file osv-scanner reads, and each migration PR should check what
+    that repo actually commits. Whether the gate should *fail* rather than pass when a repo declares
+    dependencies but ships nothing scannable is **undecided** — it would be a new failure condition
+    unrelated to the caller's code (§1 clause 3), so it cannot ride `v1` silently either way.
 
 ---
 

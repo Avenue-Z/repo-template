@@ -208,6 +208,9 @@ on:
     types: [opened, edited, reopened, synchronize]
 jobs:
   checks:
+    permissions:
+      contents: read
+      id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1
 CALLER
 
@@ -270,5 +273,95 @@ cout3="$(cd "${FIXTURE3}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh 
 assert_match   "a self-contained copy requires plain 'checks'" 'required: checks$' "$cout3"
 assert_nomatch "a self-contained copy does NOT require 'checks / checks'" 'required: checks / checks' "$cout3"
 rm -rf "${FIXTURE3}"
+
+# ---------------------------------------------------------------------------------------
+# A CALLER WITHOUT `id-token: write` MUST BE REFUSED, not given a required context.
+#
+# checks.yml requests id-token: write. A caller whose `checks` job does not grant it is asking for
+# an ELEVATION, and that does not fail the job: the run is a `startup_failure` with ZERO jobs, so
+# `checks / checks` never reports (measured: avenue-z-ci-lab/adopter-private run 34709355618).
+# Requiring that context then hangs every PR PENDING FOREVER. init-repo.sh writes the grant for new
+# repos; this is the guard for the repos migrated to a caller by hand.
+#
+# What counts is the `checks` job's EFFECTIVE grant: its own `permissions` block REPLACES the
+# workflow-level one, and only if it has none does the workflow-level block apply. Each fixture
+# below is shaped so one specific wrong reading of that rule would pass it. Same fixture technique
+# as above; the gh stub is the org-plan-only one the self-contained case left in place, so an
+# accepted run gets past the required-checks list and stops at "cannot determine target repo".
+caller_run() { # <checks.yml content> -- sets CALLER_RC and CALLER_OUT
+  local fx
+  fx="$(mktemp -d)"
+  mkdir -p "${fx}/scripts" "${fx}/.github/rulesets" "${fx}/.github/workflows"
+  cp scripts/apply-rulesets.sh "${fx}/scripts/apply-rulesets.sh"
+  cp .github/rulesets/repo-ruleset.json "${fx}/.github/rulesets/repo-ruleset.json"
+  printf '%s\n' "$1" > "${fx}/.github/workflows/checks.yml"
+  CALLER_RC=0
+  CALLER_OUT="$(cd "${fx}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1)" || CALLER_RC=$?
+  rm -rf "${fx}"
+}
+assert_refused() { # <what>
+  if [ "${CALLER_RC}" -ne 0 ]; then pass "$1: refused (non-zero exit, even under --dry-run)"; else fail "$1: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+  assert_match   "$1: the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
+  assert_nomatch "$1: never gets as far as requiring 'checks / checks'" 'required: checks / checks' "${CALLER_OUT}"
+}
+
+echo "apply-rulesets: a caller that grants nothing is refused"
+caller_run 'name: checks
+on: pull_request
+jobs:
+  checks:
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1'
+assert_refused "no permissions anywhere"
+
+# Breaks if the grant is found by searching TEXT: it appears here only in comments and on a
+# different job, never on `checks`.
+echo "apply-rulesets: a grant that exists only in comments or on another job is refused"
+caller_run 'name: checks
+on: pull_request
+# the checks job needs id-token: write
+jobs:
+  checks:
+    # id-token: write
+    permissions:
+      contents: read
+      # id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1
+  other:
+    permissions:
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - run: true'
+assert_refused "grant only in comments / on another job"
+
+# Breaks if the workflow-level block is consulted even though the job has its own.
+echo "apply-rulesets: a workflow-level grant REPLACED by a job-level block without it is refused"
+caller_run 'name: checks
+on: pull_request
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1'
+assert_refused "job-level block drops the workflow-level grant"
+
+# Breaks if only the job-level block is read: with no job block, the workflow-level grant applies.
+# The column-0 comment inside the block is valid YAML; it breaks a reader that lets a comment end a
+# block, and the trailing comment breaks one that anchors the grant at end of line.
+echo "apply-rulesets: a workflow-level grant with no job-level block is accepted"
+caller_run 'name: checks
+on: pull_request
+permissions:
+  contents: read
+# the grant below is for checks.yml
+  id-token: write  # checks.yml mints an OIDC token to learn its own ref
+jobs:
+  checks:
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1'
+if [ "${CALLER_RC}" -eq 0 ]; then pass "workflow-level grant: accepted (exit 0)"; else fail "workflow-level grant: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
+assert_match "workflow-level grant: requires 'checks / checks'" 'required: checks / checks' "${CALLER_OUT}"
 
 finish

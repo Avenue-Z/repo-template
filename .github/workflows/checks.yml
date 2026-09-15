@@ -76,6 +76,16 @@ on:
 # GITHUB_TOKEN scope happens to be, which on many orgs is read-write.
 permissions:
   contents: read
+  # NOT a widening for the sake of it. The staging step below reads this workflow's own ref from the
+  # OIDC token's `job_workflow_ref` claim, and minting that token needs `id-token: write`. It has to
+  # be declared HERE as well as in the caller: permissions along a reusable-workflow call chain can
+  # be maintained or reduced, never elevated, so a called workflow declaring only `contents: read`
+  # reduces id-token to `none` and the claim becomes unreadable no matter what the caller granted.
+  #
+  # State the cost, because the spec does. A consumer granting this hands the template the ability to
+  # mint an OIDC token for ANY audience in that repository. First-party code, remote risk, but real.
+  # On repo-template's own runs the token is never requested at all — that path exits above the fetch.
+  id-token: write
 
 jobs:
   checks:
@@ -99,12 +109,21 @@ jobs:
       #
       # TWO PATHS, because one size is wrong for both populations:
       #
-      #   a CONSUMER -> the template, at the ref THIS WORKFLOW WAS CALLED AT. That is
-      #                 github.job_workflow_ref (e.g. Avenue-Z/repo-template/.github/workflows/
-      #                 checks.yml@refs/tags/v1.2.0), NOT github.workflow_ref, which is the CALLER's
+      #   a CONSUMER -> the template, at the ref THIS WORKFLOW WAS CALLED AT. That value is
+      #                 `job_workflow_ref` (e.g. Avenue-Z/repo-template/.github/workflows/
+      #                 checks.yml@refs/tags/v1.2.0), NOT `workflow_ref`, which is the CALLER's
       #                 workflow and would stage the consumer's own tree straight back into the job.
       #                 Deriving it rather than hardcoding `ref: v1` is what makes the immutable point
       #                 tags a real rollback: pinned to @v1.2.0, you get v1.2.0's scripts.
+      #
+      #                 IT IS AN OIDC CLAIM, NOT A CONTEXT FIELD, and that distinction is the whole
+      #                 bug this step was born with. `${{ github.job_workflow_ref }}` interpolates to
+      #                 the EMPTY STRING in every run — called or not — so the refusal below, written
+      #                 for a state its own comment called impossible, fired in every consumer and no
+      #                 gate ran anywhere. Measured on a real adoption (avenue-z-ci-lab/adopter-private
+      #                 run 34705802136) and reproduced with no Avenue-Z repo involved at all (ci-probe
+      #                 run 34705912086). The claim carries exactly the value the context did not
+      #                 (run 34708273212). Do not "simplify" this back into a ${{ }} read.
       #
       #   repo-template ITSELF -> the workspace. Two reasons, both decisive. Bootstrap: this repo's
       #                 PRs cannot check out a tag that Phase A has not cut yet, or the PR that cuts
@@ -118,23 +137,47 @@ jobs:
       # context red — but a PR that edits the script and its suite together defeats that.
       - name: Resolve where the gate scripts come from
         id: scripts_src
-        env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_REPOSITORY}" = "Avenue-Z/repo-template" ]; then
             echo "local=true" >> "${GITHUB_OUTPUT}"
             echo "::notice::gate scripts: this is repo-template — using the workspace copy"
-          else
-            # An empty job_workflow_ref here means we are not running as a called workflow in a repo
-            # that is not the template, which should be impossible. Refuse rather than guess a ref:
-            # guessing means staging SOMETHING and reporting a verdict from it.
-            [ -n "${JOB_WORKFLOW_REF:-}" ] || {
-              echo "::error::github.job_workflow_ref is empty and this is not repo-template — refusing to stage gate scripts from an unknown ref"; exit 1; }
-            echo "local=false" >> "${GITHUB_OUTPUT}"
-            echo "ref=${JOB_WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
-            echo "::notice::gate scripts: staging from Avenue-Z/repo-template@${JOB_WORKFLOW_REF##*@}"
+            exit 0
           fi
+
+          # Every refusal below stages NOTHING and reports NO verdict. That is the posture: guessing a
+          # ref means running a gate from somewhere arbitrary and calling the result green.
+          # No endpoint means the caller did not grant `id-token: write` on its `checks` job.
+          [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || {
+            echo "::error::no OIDC token endpoint in this job — the calling repository must grant 'permissions: id-token: write' on its 'checks' job. Refusing to stage gate scripts from an unknown ref"
+            exit 1
+          }
+
+          # The request token is a credential: it goes in a header and is NEVER echoed. Only the
+          # resolved claim is printed. `|| true` defers a transport failure by one line, to the check
+          # that can actually explain it.
+          jwt="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r '.value // empty')" || true
+          [ -n "${jwt}" ] || {
+            echo "::error::the OIDC token endpoint returned no token — refusing to stage gate scripts from an unknown ref"
+            exit 1
+          }
+
+          # base64URL, not base64: `-`/`_` stand in for `+`/`/` and the `=` padding is stripped.
+          # `base64 -d` gets both of those wrong on its own, silently, on some payloads and not others.
+          payload="$(printf '%s' "${jwt}" | cut -d. -f2 | tr '_-' '/+')"
+          case $(( ${#payload} % 4 )) in
+            2) payload="${payload}==" ;;
+            3) payload="${payload}=" ;;
+          esac
+          claim="$(printf '%s' "${payload}" | base64 -d 2>/dev/null | jq -r '.job_workflow_ref // empty')" || true
+          [ -n "${claim}" ] || {
+            echo "::error::the OIDC token carries no job_workflow_ref claim — refusing to stage gate scripts from an unknown ref"
+            exit 1
+          }
+
+          echo "local=false" >> "${GITHUB_OUTPUT}"
+          echo "ref=${claim##*@}" >> "${GITHUB_OUTPUT}"
+          echo "::notice::gate scripts: staging from Avenue-Z/repo-template@${claim##*@} (OIDC claim job_workflow_ref=${claim})"
 
       # actions/checkout's `path:` is documented as a path UNDER GITHUB_WORKSPACE and it will not
       # write outside it, so this cannot land directly in RUNNER_TEMP. Hence the subdirectory, the

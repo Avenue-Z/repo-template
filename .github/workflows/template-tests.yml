@@ -136,4 +136,17 @@ jobs:
   # covers it once, by hand, on data-warehouse.
   self-call:
     if: github.event_name == 'push'
+    # THE SELF-CALL IS A CALLER AND EVERY RULE A CONSUMER'S CALLER OBEYS APPLIES HERE TOO. checks.yml
+    # requests id-token: write, because it reads the ref it was called at from the OIDC
+    # job_workflow_ref claim. A caller granting less is an ELEVATION, and an elevation does not fail
+    # this JOB -- it fails the whole WORKFLOW at startup, with zero jobs and no context reported.
+    # The `if:` above does not save it either: the call is expanded before the condition is ever
+    # evaluated, so a pull_request that never runs this job still turns the REQUIRED template-tests
+    # check into a startup_failure. Observed on run 34709475980, on the commit that added the
+    # permission to checks.yml and not this block.
+    #
+    # contents: read is restated because a job-level block REPLACES the workflow-level one.
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/checks.yml

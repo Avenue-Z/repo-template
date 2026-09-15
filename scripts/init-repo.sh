@@ -419,7 +419,7 @@ jobs:
     # context is never reported AT ALL. Where that context is required, the PR does not fail; it
     # hangs PENDING FOREVER. Loud in the Actions tab, invisible on the PR. This is why the grant
     # belongs in the migration PR that writes the caller, before apply-rulesets.sh runs anywhere
-    # the ruleset is live.
+    # the ruleset is live. apply-rulesets.sh refuses a caller whose `checks` job lacks it.
     permissions:
       contents: read
       id-token: write

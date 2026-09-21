@@ -56,7 +56,8 @@ Checked during design, on 2026-09-21.
 4. **Two repos may have leaked a PAT into their images.** A value passed with `ARG` and used in a
    `RUN` is recorded in the image's layer history; anyone who can pull the image can read it with
    `docker history --no-trunc`. Whether the pushed images actually expose it is **not yet checked**
-   (§3).
+   (§3). Independently of the images, a `_GH_PAT` substitution is stored in plaintext on every Cloud
+   Build build record, so the PATs are treated as exposed regardless.
 5. **Workload Identity Federation is already in use in the org.** `auto-slide-decks` deploys to Cloud
    Run from Actions with `google-github-actions/auth@v2` and a WIF provider in project
    `automated-slide-deck`, region `us-central1`. Other apps run in `us-east4`. GCP projects are
@@ -78,6 +79,15 @@ Checked during design, on 2026-09-21.
   `DOCKER_BUILDKIT=1`.
 - **O4.** Which service account each consumer's Cloud Build / Cloud Run build runs as (legacy Cloud
   Build SA vs. default compute SA vs. a custom one). The read grant in §1 goes to that account.
+- **O5.** The virtual repo never serves a version of one of our package names from `pypi`, including
+  a *higher* version that exists only on PyPI. Test before any consumer migrates: publish a canary
+  name to `python-private` at 1.0.0, make the same name resolvable from `pypi` at a higher version
+  (a real PyPI name, or a test remote pointed at a private index), and check that `pip index versions`
+  and `pip install -U` through `python` see only 1.0.0. §1's dependency-confusion control relies on
+  this; if it does not hold, reserve both names on PyPI (see *Rejected*) before any consumer migrates.
+- **O6.** `glean-chat-api-client` declares a `dev` extra containing pytest and has at least one
+  test (it has no workflows today). If not, the PR adding its release workflow adds them; §2 step 2
+  is not weakened to pass without tests.
 
 ## Section 1 — The registry
 
@@ -97,9 +107,9 @@ runs in (`us-central1`, `us-east4`) are free:
 
     https://us-python.pkg.dev/avenue-z-shared-artifacts/python/simple/
 
-Because the virtual repo resolves a name from the higher-priority upstream first, a package on public
-PyPI with the same name as one of ours cannot be installed in its place. That is the
-dependency-confusion control, and it is why consumers use `--index-url` (single index), never
+The virtual repo is expected to resolve a name from the higher-priority upstream first, so that a
+package on public PyPI with the same name as one of ours cannot be installed in its place (O5 — not
+yet verified). That is the dependency-confusion control, and it is why consumers use `--index-url` (single index), never
 `--extra-index-url` (pip merges indexes and takes the highest version from any of them).
 
 ### Identities
@@ -109,12 +119,16 @@ All grants are on individual repositories, not the project.
 - **Workload Identity pool** `github` with an OIDC provider for `token.actions.githubusercontent.com`:
   - attribute condition: `assertion.repository_owner_id == '<Avenue-Z org id>'`. The numeric ID,
     not the name, so a renamed or re-registered org name cannot satisfy it.
-  - attribute mappings: `attribute.repository = assertion.repository`,
-    `attribute.release = assertion.repository + ':' + assertion.ref_type`.
+  - attribute mappings: `attribute.repository_id = assertion.repository_id`,
+    `attribute.publish = assertion.repository_id + ':' + assertion.job_workflow_ref`. Numeric
+    repository IDs, for the same reason as the org ID.
 - **`pkg-publisher@`** service account: `artifactregistry.writer` on `python-private` only.
-  Impersonable by `principalSet://…/attribute.release/Avenue-Z/glean-chat-api-client:tag` and
-  `…/drive-api-client:tag`. A branch push or a PR in those repos cannot publish; neither can any
-  other repo.
+  Impersonable by
+  `principalSet://…/attribute.publish/<glean repo id>:Avenue-Z/glean-chat-api-client/.github/workflows/publish.yml@refs/heads/main`
+  and the same for `drive-api-client`. `job_workflow_ref` is an OIDC claim naming the *called*
+  workflow and the ref it was loaded from, so only `publish.yml` as it stands on the protected default
+  branch can publish. A branch push, a PR, another repo, or a tagged commit carrying an edited
+  workflow produces a different value and cannot impersonate `pkg-publisher`.
 - **`pkg-reader@`** service account: `artifactregistry.reader` on `python`. Impersonable by any
   identity in the pool (i.e. any Avenue-Z repo).
 - **Each consumer's build service account** (O4): `artifactregistry.reader` on `python`, granted
@@ -125,39 +139,57 @@ No service-account key is created at any point.
 
 ### Cost
 
-Storage for two small packages is a few MB; the PyPI cache is at most a few hundred MB. Cloud Build and
-Cloud Run downloads are free (multi-region → same continent). The only line that scales is GitHub
-Actions installs, which are internet egress: routing all PyPI traffic through `python` costs roughly
-200 MB × runs per month. Every consumer's CI **must** enable pip caching
-(`actions/setup-python` `cache: pip`), which makes most runs download almost nothing. Expected total:
-under $5/month.
+Storage for two small packages is a few MB. The PyPI cache keeps everything it has ever fetched, so
+`pypi` gets a **cleanup policy deleting cached versions older than 90 days** (they are re-fetched on
+next use); without it, storage only grows. Cloud Build and Cloud Run downloads are free (multi-region
+→ same continent). The lines that scale are internet egress: GitHub Actions installs, roughly
+200 MB × cache-miss runs per month, and developer laptops. Every consumer's CI **must** enable pip
+caching (`actions/setup-python` `cache: pip`), which makes most runs download almost nothing, and
+laptops use the index only per project (§3), never globally.
+
+Expected total: under $5/month, **assuming** the `pypi` cache stays within a few GiB under the
+cleanup policy and cache-miss egress (Actions plus laptops) stays in the tens of GiB per month. These
+are assumptions, not measurements: a budget alert on `avenue-z-shared-artifacts` at $10/month is what
+checks them.
 
 ## Section 2 — Publishing (in each client repo)
 
-A new `.github/workflows/release.yml` in `glean-chat-api-client` and `drive-api-client`:
+Two new workflows in `glean-chat-api-client` and `drive-api-client`:
 
-    on: push: tags: ['v*']
-    permissions: { contents: read, id-token: write }
+- `.github/workflows/release.yml`, a thin caller:
 
-Steps:
+      on: { push: { tags: ['v*'] }, workflow_dispatch: { inputs: { tag: … } } }
+      permissions: { contents: read, id-token: write }
+      jobs: publish: uses: Avenue-Z/<repo>/.github/workflows/publish.yml@main
 
-1. Fail unless the tag, minus the leading `v`, equals `project.version` in `pyproject.toml`. Nothing
-   is built or uploaded on a mismatch.
-2. Run the tests (`pip install -e '.[dev]' && pytest`).
+  The full `Avenue-Z/<repo>/…@main` path, never `./…`, so the workflow that runs is always the one
+  on `main` whatever the tagged commit contains — which is what `job_workflow_ref` (§1) pins.
+- `.github/workflows/publish.yml` (`on: workflow_call`, input `tag`), with these steps:
+
+1. Fail unless the tag matches `v<major>.<minor>.<patch>`; check out `refs/tags/<tag>`; fail unless
+   that commit is an ancestor of `origin/main`; fail unless the tag, minus the leading `v`, equals
+   `project.version` in `pyproject.toml`. Nothing is built or uploaded on any failure.
+2. Run the tests (`pip install -e '.[dev]' && pytest`) (O6).
 3. `python -m build` → wheel + sdist.
 4. `google-github-actions/auth@v2` as `pkg-publisher`.
 5. `pip install twine keyrings.google-artifactregistry-auth` and
    `twine upload --repository-url https://us-python.pkg.dev/avenue-z-shared-artifacts/python-private/ dist/*`.
 
+Each client repo also gets a **tag ruleset** on `refs/tags/v*` restricting creation, update and
+deletion to maintainers, so a tag cannot be pushed by any writer or moved after release.
+
 Versions are immutable once published (O1). The release process is: bump `version`, merge, push the
 matching tag.
 
 **Backfill.** The existing tags (`glean-chat-api-client` v0.1.0, `drive-api-client` v0.2.0) are
-published once, by running the same build and upload from a checkout of each tag, so consumers can
-switch index without also switching version.
+published once by running `release.yml` via `workflow_dispatch` with `tag: v0.1.0` / `tag: v0.2.0`,
+after `publish.yml` is on `main`. The called workflow comes from `main`, so the old tags need not
+contain it, and no human is granted write. This lets consumers switch index without also switching
+version.
 
-**Failure visibility.** A failed release fails the tag's workflow run, which notifies the pusher. A
-version mismatch fails at step 1, before anything reaches the registry.
+**Failure visibility.** A failed release fails the tag's (or dispatch's) workflow run, which notifies
+the actor. A version mismatch or a tag off `main` fails at step 1, before anything reaches the
+registry.
 
 ## Section 3 — Migrating the consumers
 
@@ -167,6 +199,12 @@ One PR per repo, through that repo's normal branch flow.
 
 **Dependency.** `glean-chat-api-client @ git+…@v0.1.0` → `glean-chat-api-client==0.1.0` (and likewise
 `drive-api-client==0.2.0`), wherever it is declared.
+
+**Dependabot.** Any repo with a pip Dependabot block (repo-template generates one) adds an `ignore`
+entry for `glean-chat-api-client` and `drive-api-client`, so Dependabot never looks those names up
+on public PyPI and can never propose a squatter's version. Bumps of these two are made by hand. A
+Dependabot `registries:` entry for the index is not used: it would need a long-lived service-account
+key, which §1 rules out.
 
 **GitHub Actions**, in any job that installs dependencies:
 
@@ -197,14 +235,18 @@ RUN --mount=type=secret,id=ar_token \
     pip install --no-cache-dir -r requirements.txt
 ```
 
-In `cloudbuild.yaml`: one step writes `gcloud auth print-access-token` to `/workspace/ar_token`, the
-build step runs with `DOCKER_BUILDKIT=1` and `--secret id=ar_token,src=/workspace/ar_token` (O3). In
+In `cloudbuild.yaml`: one step writes `gcloud auth print-access-token` to `/builder/home/ar_token`, the
+build step runs with `DOCKER_BUILDKIT=1` and `--secret id=ar_token,src=/builder/home/ar_token` (O3).
+**Never under `/workspace`**: that is the checked-out source and the Docker build context, so any
+`COPY . .` would copy the token into a layer. `/builder/home` persists across steps and is not in the
+context. In
 Actions: after `auth`, `--secret id=ar_token,env=AR_TOKEN` with `AR_TOKEN` from
 `gcloud auth print-access-token`. The token lives about an hour and is not written to any layer.
 
-**Laptops**, once per developer: `gcloud auth login`,
-`pip install keyrings.google-artifactregistry-auth`, and `PIP_INDEX_URL` set as above (or in
-`pip.conf`).
+**Laptops**, once per developer: `gcloud auth login` and
+`pip install keyrings.google-artifactregistry-auth`. `PIP_INDEX_URL` is set **per project** (the
+project virtualenv's `pip.conf`, or `.envrc`), never in a global `pip.conf`: a global setting routes
+every unrelated install through billed egress and the shared cache.
 
 ### Per repo
 
@@ -221,14 +263,21 @@ Actions: after `auth`, `--secret id=ar_token,env=AR_TOKEN` with `AR_TOKEN` from
 
 ### PAT cleanup (monthly-report-agent, visibility-drop-root-cause-engine)
 
-Done as part of each repo's migration PR, in this order:
+Step 1 is incident handling and happens **immediately**, before and independent of the migration PR.
+The rest follows in order.
 
-1. Inspect the published images with `docker history --no-trunc` and record whether the token is
-   visible. This determines how far step 3 has to reach.
-2. Merge the migration and confirm a build and deploy succeed **without** the PAT.
-3. Revoke the PAT. A fine-grained token is visible to org owners under *Organization settings →
-   Personal access tokens*; a classic token can only be revoked by its owner.
-4. Delete every image version built with the `ARG` from its registry.
+1. Revoke the PAT now. It is already exposed in every Cloud Build build record (Established 4), so
+   no inspection result makes waiting safe; the two repos' builds are broken until their migration
+   merges, and that is accepted. A fine-grained token is visible to org owners under *Organization
+   settings → Personal access tokens*; a classic token can only be revoked by its owner.
+2. Inventory where the value was readable, to know who could have seen it: image layer history
+   (`docker history --no-trunc` on every pushed version), Cloud Build build records
+   (`gcloud builds describe <id>` substitutions), build logs in Cloud Logging, and the trigger
+   config. Record which principals had image pull, `cloudbuild.builds.get` or log read access, and
+   check the org audit log for use of the token.
+3. Merge the migration and confirm a build and deploy succeed **without** the PAT.
+4. Delete every image version built with the `ARG` from its registry. Build records and logs cannot
+   all be deleted; revocation in step 1 is what makes the remaining copies harmless.
 5. Delete the `_GH_PAT` substitution from the Cloud Build trigger and any `GH_PAT` secret in the repo
    or the trigger.
 
@@ -256,13 +305,17 @@ repo's `README.md`, so the repo and the skill agree.
 
 1. `gcloud artifacts repositories describe python --location us` shows `python-private` at priority
    100 and `pypi` at 10.
-2. Both client repos publish from a tag; a tag that does not match `pyproject.toml` fails before
-   upload; a push to a branch cannot impersonate `pkg-publisher`.
+2. Both client repos publish from a tag; a tag that does not match `pyproject.toml`, or points at a
+   commit not on `main`, fails before upload; a push to a branch, and any workflow other than
+   `publish.yml@refs/heads/main`, cannot impersonate `pkg-publisher`; the `v*` tag ruleset is on.
+   O5 has been tested and holds (or both names are reserved on PyPI).
 3. All eight consumers pass CI on GitHub, and `monthly-report-agent` and
    `visibility-drop-root-cause-engine` build and deploy to Cloud Run through the new path.
 4. Reading every Avenue-Z repo's dependency files finds no `git+…Avenue-Z/(glean-chat-api-client|drive-api-client)`,
-   no `GH_PAT`, and no vendored copy of either package.
-5. Both PATs are revoked and the images that carried them are deleted.
+   no `GH_PAT`, and no vendored copy of either package; no `cloudbuild.yaml` writes the access token
+   under `/workspace`; every pip Dependabot block ignores both packages.
+5. Both PATs were revoked before either migration PR merged, and the images that carried them are
+   deleted.
 6. Both skills are updated and their plugins released.
 
 ## Rejected
@@ -275,7 +328,8 @@ repo's `README.md`, so the repo and the skill agree.
   being removed.
 - **Deploy keys.** One key per client repo per consumer; does not scale past a handful.
 - **`--extra-index-url` + placeholder packages reserved on PyPI.** Free, but safety depends on the
-  placeholders staying registered, and it publishes the names.
+  placeholders staying registered, and it publishes the names. (Reserving the names alongside the
+  virtual repo remains the fallback if O5 fails.)
 - **Hash-pinned lockfiles in every consumer.** Safe and free, but changes dependency tooling in all
   eight repos to solve a problem the virtual repo solves once.
 

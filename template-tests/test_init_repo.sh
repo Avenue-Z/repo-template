@@ -102,6 +102,7 @@ assert_eq "read" "$(jq -r '.contents // "ABSENT"' <<<"$gen_caller_perms")" \
 # advance-v1.yml force-moves a tag; neither has any business in a generated repo.
 assert_no_file "the golden contract file did not ship" .github/reusable-contract.json
 assert_no_file "the v1 advance workflow did not ship" .github/workflows/advance-v1.yml
+assert_no_file "the reusable python-ci.yml did not ship (a generated repo gets a caller)" .github/workflows/python-ci.yml
 # The three workflows checks.yml replaced must be GONE, not merely unreferenced. A generated repo
 # that shipped both would pay for the jobs twice over — the whole point of the merge — and would
 # report contexts the ruleset no longer requires.

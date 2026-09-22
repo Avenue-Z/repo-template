@@ -428,8 +428,9 @@ CALLER
 info "wrote .github/workflows/checks.yml as a caller of repo-template@v1"
 
 # Template-only artifacts. reusable-contract.json is the golden surface file that gates the v1 tag,
-# and advance-v1.yml force-moves that tag — a generated repo has no business carrying either.
-rm -f .github/reusable-contract.json .github/workflows/advance-v1.yml
+# advance-v1.yml force-moves that tag, and python-ci.yml is the reusable Python CI; a generated repo
+# carries the caller copied from templates/python instead.
+rm -f .github/reusable-contract.json .github/reusable-contract-python-ci.json .github/workflows/advance-v1.yml .github/workflows/python-ci.yml
 
 # The front door is template-only. README.md is the TEMPLATE's GitHub landing page; the seed a
 # generated repo starts from lives in README.repo.tmpl — a .tmpl suffix so GitHub renders the front

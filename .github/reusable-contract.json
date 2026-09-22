@@ -1,7 +1,15 @@
 {
-  "_comment": "THE CONSUMER-VISIBLE SURFACE OF checks.yml. Editing this file is the deliberate decision that the surface moved. template-tests/test_reusable_contract.sh asserts checks.yml matches it exactly, and .github/workflows/advance-v1.yml REFUSES to advance the v1 tag while this file differs from what v1 points at. See template-docs/specs/2026-09-09-reusable-workflows-design.md sections 1 and 4.",
+  "_comment": "THE CONSUMER-VISIBLE SURFACE OF checks.yml: the job key, the triggers, the declared inputs/secrets, and the permissions the checks job requests (every caller must grant those, and a caller granting less is a startup_failure with no context reported, not a red check). Editing this file is the deliberate decision that the surface moved. template-tests/test_reusable_contract.sh asserts checks.yml matches it exactly, and .github/workflows/advance-v1.yml REFUSES to advance the v1 tag while this file differs from what v1 points at. See template-docs/specs/2026-09-09-reusable-workflows-design.md sections 1 and 4.",
   "job": "checks",
-  "on": ["pull_request", "schedule", "workflow_call"],
+  "on": [
+    "pull_request",
+    "schedule",
+    "workflow_call"
+  ],
+  "permissions": {
+    "contents": "read",
+    "id-token": "write"
+  },
   "inputs": [],
   "secrets": []
 }

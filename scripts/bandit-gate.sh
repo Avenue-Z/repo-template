@@ -36,6 +36,20 @@ if [ ! -s "${BANDIT_JSON}" ]; then
   exit 0
 fi
 
+# A scan that covered nothing is refused on EVERY tier: the tier softens findings, and there were
+# none to soften. `bandit -r src` on a repo with no src/ exits 0 with no results, 0 LOC, and the
+# missing target only in .errors — that must not read as clean (the sca-gate.sh posture).
+missing="$(jq -r '[ (.errors // [])[] | select(.reason == "No such file or directory") | .filename ] | join(", ")' "${BANDIT_JSON}")"
+if [ -n "${missing}" ]; then
+  echo "::error::bandit: scan target(s) not found: ${missing} — refusing to report an unscanned tree as clean"
+  exit 1
+fi
+loc="$(jq -r '.metrics._totals.loc // "missing"' "${BANDIT_JSON}")"
+if [ "${loc}" = "missing" ] || [ "${loc}" = "0" ]; then
+  echo "::error::bandit scanned ${loc} lines of code — refusing to report a scan that covered nothing as clean"
+  exit 1
+fi
+
 # Coverage honesty: files bandit could not parse land in .errors. Surface them; do not block on them.
 errs="$(jq -r '(.errors // []) | length' "${BANDIT_JSON}" 2>/dev/null || echo 0)"
 if [ "${errs}" -gt 0 ]; then

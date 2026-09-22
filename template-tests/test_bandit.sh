@@ -20,13 +20,19 @@ printf '{"nope":true}\n'            > "$TMP/malformed.json"   # no tier -> must 
 
 # --- bandit report fixtures (shape of `bandit -f json`: results[].issue_severity/_confidence) ---
 mk() { # <severity> <confidence> -> a one-finding bandit report on stdout
-  printf '{"errors":[],"results":[{"test_id":"B602","test_name":"x","filename":"src/app/a.py","line_number":3,"issue_severity":"%s","issue_confidence":"%s","issue_text":"t"}]}\n' "$1" "$2"
+  printf '{"errors":[],"metrics":{"_totals":{"loc":3}},"results":[{"test_id":"B602","test_name":"x","filename":"src/app/a.py","line_number":3,"issue_severity":"%s","issue_confidence":"%s","issue_text":"t"}]}\n' "$1" "$2"
 }
 mk HIGH HIGH   > "$TMP/high_high.json"
 mk HIGH LOW    > "$TMP/high_low.json"     # confidence axis: severity high, confidence low -> no block
 mk LOW  HIGH   > "$TMP/low_high.json"     # severity axis: confidence high, severity low  -> no block
 mk MEDIUM MEDIUM > "$TMP/med_med.json"
-printf '{"errors":[],"results":[]}\n' > "$TMP/clean.json"
+printf '{"errors":[],"metrics":{"_totals":{"loc":3}},"results":[]}\n' > "$TMP/clean.json"
+# A scan that covered nothing. Shapes copied from real Bandit 1.9.4: `bandit -r src` on a repo with
+# no src/ exits 0 with no results, loc 0 and the missing target recorded only in .errors.
+printf '{"errors":[{"filename":"./src","reason":"No such file or directory"}],"metrics":{"_totals":{"loc":0}},"results":[]}\n' > "$TMP/no_target.json"
+printf '{"errors":[],"metrics":{"_totals":{"loc":0}},"results":[]}\n' > "$TMP/zero_loc.json"   # src/ exists, holds no code
+printf '{"errors":[{"filename":"./tests","reason":"No such file or directory"}],"metrics":{"_totals":{"loc":3}},"results":[]}\n' > "$TMP/one_target_missing.json"
+printf '{"errors":[],"results":[]}\n' > "$TMP/no_metrics.json"   # not a Bandit report: it always writes metrics
 
 gate_rc() { local rc=0; "$GATE" "$1" "$2" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
 
@@ -39,6 +45,13 @@ assert_eq 0 "$(gate_rc "$TMP/med_med.json"   "$TMP/client.json")"   "client-faci
 assert_eq 0 "$(gate_rc "$TMP/clean.json"     "$TMP/client.json")"   "a clean report (no findings) passes"
 assert_eq 1 "$(gate_rc "$TMP/high_high.json" "$TMP/malformed.json")" "a policy with no valid tier defaults to client-facing (strict) and still blocks (fail-safe)"
 assert_eq 0 "$(gate_rc "$TMP/does-not-exist.json" "$TMP/client.json")" "a missing/empty bandit report passes (nothing to gate)"
+
+echo "bandit-gate: a scan that covered nothing is refused, never reported clean (any tier)"
+assert_eq 1 "$(gate_rc "$TMP/no_target.json"  "$TMP/client.json")"   "client-facing refuses a scan whose target does not exist (no src/)"
+assert_eq 1 "$(gate_rc "$TMP/no_target.json"  "$TMP/internal.json")" "internal refuses it too: the tier softens findings, not a scan that never ran"
+assert_eq 1 "$(gate_rc "$TMP/zero_loc.json"   "$TMP/client.json")"   "a scan that read zero lines of code is refused"
+assert_eq 1 "$(gate_rc "$TMP/one_target_missing.json" "$TMP/client.json")" "a missing target is refused even when another target was scanned"
+assert_eq 1 "$(gate_rc "$TMP/no_metrics.json" "$TMP/client.json")"   "a report with no line count is refused (cannot show anything was scanned)"
 
 # --- design §Testing (b): reads its TIER from Item 1's committed policy file, no 2nd tier dial ---
 echo "bandit-gate: reads the shared Item 1 policy file; adds no second tier file"
@@ -56,6 +69,10 @@ if command -v bandit >/dev/null 2>&1; then
   bandit -r "$TMP/proj" -f json -o "$TMP/real.json" >/dev/null 2>&1 || true
   assert_eq "HIGH" "$(jq -r '[.results[]|select(.issue_severity=="HIGH" and .issue_confidence=="HIGH")][0].issue_severity // "NONE"' "$TMP/real.json")" "real bandit emits a HIGH/HIGH finding for shell=True (schema matches our fixtures)"
   assert_eq 1 "$(gate_rc "$TMP/real.json" "$TMP/client.json")" "the gate blocks a REAL bandit high/high report on client-facing"
+  # The flat-layout repo from the PR 84 review: code outside src/, so `bandit -r src` scans nothing.
+  mkdir -p "$TMP/flat/app"; cp "$TMP/proj/x.py" "$TMP/flat/app/x.py"
+  ( cd "$TMP/flat" && bandit -r src -f json -o "$TMP/real_flat.json" >/dev/null 2>&1 ) || true
+  assert_eq 1 "$(gate_rc "$TMP/real_flat.json" "$TMP/client.json")" "the gate refuses a REAL bandit report from a repo with no src/"
 else
   skip "bandit not installed — schema-fidelity check not run"
 fi

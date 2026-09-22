@@ -57,6 +57,9 @@ design document written during a CI outage is exactly where that rule gets teste
 3. **`checks.yml` needs no secrets.** It declares only `permissions: contents: read`, and installs
    gitleaks by downloading the release tarball against a checksum rather than using
    `gitleaks-action`, so there is no `GITLEAKS_LICENSE`. **Callers need no `secrets: inherit`.**
+   **Superseded in part, 2026-09-15:** it still needs no secrets, but it now requests
+   `id-token: write`, and **every caller must grant it** (§2). A grant is not a secret, but it is a
+   requirement on the caller that this fact used to say did not exist.
 4. **Job count is the bill, not job duration.** `client-satisfaction-report`: 560 `ci` jobs billed 563
    minutes, with 99% of jobs finishing under 60 seconds. GitHub rounds every job up to a whole minute.
    `checks.yml`'s own header already states this ("a 21s job and a 12s job bill exactly the same").
@@ -78,7 +81,25 @@ design document written during a CI outage is exactly where that rule gets teste
     ruff/mypy/`pytest -q`), and drifted pinned action SHAs. That small surface is what makes §6
     tractable.
 
-### OPEN — must be settled empirically, in Phase B
+### OPEN at design time — four of five since settled in the lab
+
+**Update, 2026-09-15.** Four of these were settled on 2026-09-12 in a throwaway org with independent
+billing, `avenue-z-ci-lab`, from a private repo calling a public template **cross-org** — a stricter
+arrangement than the fleet's same-org one, so a green result there transfers and a red one might not.
+Evidence and run ids are in `docs/notes/2026-09-12-phase-b-lab-findings.md`. The questions are kept
+below exactly as written, because the design was argued from them.
+
+| Question | Answer |
+|---|---|
+| A private repo executes a public template's reusable workflow | **Yes** |
+| `actions/checkout` inside a called workflow resolves to the caller | **Yes**, as §2 assumed (run `34708273212`) |
+| A consumer's default `GITHUB_TOKEN` can clone `Avenue-Z/repo-template` | **Yes**, under *default* org Actions policy (run `34705640335`) |
+| `github.job_workflow_ref` on a non-called run | **Empty — and empty on a called run too.** The context field is never populated; the value exists only as an OIDC token claim. That broke §2 as written, and §2 now carries the fix |
+| A fork PR from a branch named `main` reaches `advance-v1` | **Still open** |
+
+Two things the lab could not settle stay with Phase B: **Avenue-Z's own org Actions policy is unread**
+(reading it needs `admin:org`), so the `GITHUB_TOKEN` "yes" is a yes under default policy only; and the
+fork-branch probe needs the real repo.
 
 - **Whether a private repo can execute a reusable workflow from the public template.** The evidence is
   strong but incomplete. The probe run *resolved and expanded the called workflow's job* — access
@@ -141,7 +162,7 @@ Consumers reference `Avenue-Z/repo-template/.github/workflows/checks.yml@v1`.
 propagation mechanism: a fix lands on `main` here and reaches all 11 consumers with no PR anywhere.
 Breaking changes cut `v2`, and consumers bump one line at their own pace.
 
-### Breaking is exactly three things
+### Breaking is exactly four things
 
 Nothing else is. Writing the list down is what makes the `v1`/`v2` distinction enforceable rather than
 a judgement call made under deadline pressure:
@@ -160,6 +181,13 @@ a judgement call made under deadline pressure:
    asymmetry: a gate that gets *stricter about the caller's own code* (a new secret pattern that
    catches a key the caller actually committed) is not breaking — it is the gate working. The
    distinction is whether the caller could have caused the change in verdict.
+4. **A new permission requested by `checks.yml`.** Permissions along a reusable-workflow call chain can
+   be kept or reduced, never elevated, so a caller that does not grant the new one is refused when
+   GitHub expands the call: `startup_failure`, zero jobs, and **no context reported at all**. A required
+   check hangs PENDING FOREVER rather than going red. **Added 2026-09-15, after the fact:**
+   `id-token: write` (§2) was exactly this, and it advanced `v1` as `v1.4.0` with no refusal, because
+   `.github/reusable-contract.json` does not record permissions and so §4's tripwire could not see the
+   surface move. It was harmless only because no consumer called `v1` yet. See Open item 14.
 
 ### How `v1` moves, and why it must be protected
 
@@ -194,6 +222,15 @@ to move `v1`, not just the advance workflow. Today there would be exactly one, a
 change to `.github/`, on a PR, in the repo whose entire subject is this gate. Recorded in
 `## Open items`.
 
+**Superseded in Phase A: the bypass actor is a dedicated GitHub App, not the GitHub Actions app.** The
+rulesets API refuses the GitHub Actions app as a bypass actor (*"Actor GitHub Actions integration must
+be part of the ruleset source or owner organization"*) — it is not an installable app. The three
+paragraphs above are kept as the reasoning that turned out wrong. What shipped is the app
+`avenue-z-v1-tag-advance`, whose token `advance-v1.yml` mints while its own `GITHUB_TOKEN` stays
+`contents: read`. That makes the bypass workflow-scoped rather than repo-scoped, so the residual above
+is moot and a different one — the app's private key — replaces it. See Open item 8 and
+`docs/notes/2026-09-11-phase-a-v1-cut.md`.
+
 ### Immutable point tags are the rollback story
 
 Cut `v1.0.0`, `v1.1.0`, … alongside each `v1` advance, and never move them. This is not
@@ -208,8 +245,9 @@ step inside the workflow resolves *its own* version rather than a hardcoded ref.
 way — `ref: v1` in the script checkout — a consumer pinned to `checks.yml@v1.2.0` would still execute
 gate scripts staged from the moving `v1`: the rollback would restore the YAML and leave the behaviour
 it was rolled back from fully in place. That is worse than having no rollback, because it looks like
-one and reports success. §2 resolves the ref from `github.job_workflow_ref` for this reason, and that
-mechanism is what makes this section true rather than aspirational.
+one and reports success. §2 resolves the ref from the OIDC token's `job_workflow_ref` claim for this
+reason (an earlier version said the `github.job_workflow_ref` context field, which is never populated —
+see §2), and that mechanism is what makes this section true rather than aspirational.
 
 ## The org-wide branch matrix
 
@@ -269,9 +307,10 @@ nine restatements that are individually plausible and collectively wrong.
 
 ## Section 2 — The checkout split
 
-`actions/checkout` inside a reusable workflow resolves to the **caller** (assumed, documented, **OPEN**
-here — see above). Without deliberate handling, this design would centralise the *workflow file* and
-leave every *gate script* behind in each repo's stale copy — propagating the 40 lines of YAML and none
+`actions/checkout` inside a reusable workflow resolves to the **caller** (documented, and **confirmed**
+in the lab, run `34708273212` — see Step 0). Without deliberate handling, this design would centralise
+the *workflow file* and leave every *gate script* behind in each repo's stale copy — propagating the 40
+lines of YAML and none
 of the ~400 lines of bash that actually make the decisions. That is the shape of a migration that
 looks complete and delivers nothing.
 
@@ -283,11 +322,29 @@ Three sources, each for a different reason:
 | Caller, PR head → workspace | The tree gitleaks and osv-scanner scan | It is what is under review |
 | Caller, PR head | `.github/sca-policy.json` | Per-repo tier. Stays per-repo — a client-facing repo and an internal one legitimately differ |
 
-### "The ref this workflow was called at" is a specific context, and the wrong one looks right
+### "The ref this workflow was called at" is a specific value, and it is not where it looks
 
-The value is **`github.job_workflow_ref`**, which holds the ref path of the *called* workflow — e.g.
+The value is the ref path of the *called* workflow — e.g.
 `Avenue-Z/repo-template/.github/workflows/checks.yml@refs/tags/v1.2.0`. The staging step takes
 everything after the last `@` and checks the template out at that ref.
+
+**It comes from the OIDC token's `job_workflow_ref` claim, not from the `github` context.** An earlier
+version of this section, and Phase A as shipped, read `github.job_workflow_ref`. That expression-context
+field is **never populated**, on a called run or a direct one, so every consumer's gate refused at its
+first step (lab runs `34705802136`, `34705912086`). It failed closed, as designed. The claim carries
+exactly the value wanted and is visibly distinct from `workflow_ref`, which holds the caller's (run
+`34708273212`); pinned at `@v1.2.0` it reads `refs/tags/v1.2.0`, so point-tag rollback survives. Fixed
+in `repo-template#75`, shipped as `v1.4.0`: the staging step requests a token from
+`ACTIONS_ID_TOKEN_REQUEST_URL`, decodes its payload, and refuses — staging nothing and reporting no
+verdict — when the endpoint, the token or the claim is missing.
+
+**The cost is a permission every caller must grant: `id-token: write`.** `checks.yml` requests it, and
+permissions along a call chain are never elevated, so a caller granting less is refused when GitHub
+expands the call. **That does not produce the refusal above. It produces nothing:** `startup_failure`,
+zero jobs, and no `checks / checks` context (run `34709355618`). Where that context is required, the PR
+hangs PENDING FOREVER. `init-repo.sh` writes the grant, `test_init_repo.sh` asserts it, and
+`apply-rulesets.sh` refuses to require `checks / checks` from a caller that lacks it. The grant also
+lets the called workflow mint OIDC tokens for any audience in the caller's repo (Open item 13).
 
 `github.workflow_ref` — the name that reads more naturally and is the one an author reaches for
 first — holds the **caller's** top-level workflow and is the wrong value here. And a literal `ref: v1`
@@ -332,8 +389,9 @@ two independent reasons:
    owns the script.
 
 So the staging step branches on **`github.repository`**: in `Avenue-Z/repo-template` the scripts come
-from the workspace; everywhere else they come from the ref in `github.job_workflow_ref`. Inside a
-called workflow `github.repository` is the *caller's* repository, which is exactly the discriminator
+from the workspace; everywhere else they come from the ref in the OIDC `job_workflow_ref` claim.
+Inside a called workflow `github.repository` is the *caller's* repository, which is exactly the
+discriminator
 wanted, and it is documented behaviour rather than an inference about whether some other context
 happens to be empty when unset.
 
@@ -461,11 +519,18 @@ permissions:
   contents: read
 jobs:
   checks:
+    permissions:
+      contents: read
+      id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1
 ```
 
-No `with:`, no `secrets: inherit` (established fact 3). The resulting context is **`checks / checks`**.
-Pick that name once and never change it — under §1's clause 1 it is the single most expensive string
+No `with:`, no `secrets: inherit` (established fact 3). The job-level `permissions:` block is not
+redundant with the workflow-level one: it **replaces** that default rather than adding to it, so
+`contents: read` is restated, and `id-token: write` is the grant the ref resolution above requires.
+Dropping it is the silent failure described there. (An earlier version of this block omitted it.)
+The resulting context is **`checks / checks`**. Pick that name once and never change it — under §1's
+clause 1 it is the single most expensive string
 in this design.
 
 ### The required-context consequence, which reaches further than it first appears
@@ -544,7 +609,7 @@ Two consequences remain:
    file from the PR head, so a PR can still neuter its own gates — `SECURITY.md` and `checks.yml:71-74`
    already say so. But the attack gets **subtler**: previously it meant rewriting a 262-line
    `checks.yml` in a way a reviewer would notice at a glance; now it is changing `@v1` to
-   `@my-branch` on one line of a nine-line file. Same hole, materially easier to miss in review.
+   `@my-branch` on one line of a short caller file. Same hole, materially easier to miss in review.
    **`.github/` being code-owned goes from good practice to load-bearing**, and that sentence belongs
    in `SECURITY.md`, not only here. Note what that requires and does not yet have: this repo ships
    `.github/CODEOWNERS.tmpl` and only `init-repo.sh` instantiates it, so `repo-template` itself has no
@@ -558,13 +623,20 @@ Two consequences remain:
 
 | Phase | Repos | Exit criteria |
 |---|---|---|
-| **0** | — | **Billing restored.** Blocks everything |
-| **A** | `repo-template` | `template-tests` green; `v1` cut and tag-protected |
-| **B** | `data-warehouse` (pilot) | A good PR goes green; a deliberately bad PR goes red **for the right reason**; `actions/checkout` resolution settled empirically; real per-job durations measured |
-| **C** | `client-satisfaction-report` | Largest consumer; migrate once B has answered the open questions |
-| **D** | `announcement-recapping`, `az-media-hits`, `az-utm-generator`, `dash-social-connection`, `rippling-asana-pto`, `sf-sb-automation` | Mechanical |
+| **0** | — | **Billing restored.** Blocks B onward. Does not block G: `repo-template` is public, and G is proven in the lab |
+| **A** | `repo-template` | `template-tests` green; `v1` cut and tag-protected. **Done** 2026-09-11 — see `docs/notes/2026-09-11-phase-a-v1-cut.md` |
+| **G** | `repo-template` | `python-ci.yml` published as a reusable workflow with the §5 job-count reduction inside it, gated by its own §4 layers; a good and a deliberately bad PR observed on a Python adoption in the lab. **Moved ahead of B** — see §6 |
+| **B** | `data-warehouse` (pilot) | **One migration PR carrying both callers**, `checks` and `ci`. A good PR goes green; a deliberately bad PR goes red **for the right reason**, on each gate; real per-job durations measured, including whether folded jobs stay under a billed minute; Avenue-Z's org Actions policy read |
+| **C** | `client-satisfaction-report` | Largest consumer; one PR carrying both callers, once B has answered the open questions |
+| **D** | `announcement-recapping`, `az-media-hits`, `az-utm-generator`, `dash-social-connection`, `rippling-asana-pto`, `sf-sb-automation` | Mechanical; one PR per repo carrying both callers |
 | **E** | `noble-clone`, `data-contract` | See below — each has a specific hazard |
 | **F** | `avenue-z-reporting-v2` | Separate project. Out of scope here |
+
+**Phase H no longer exists as its own phase.** It was the round that migrated the ten `ci.yml` files to
+callers after G. With G ahead of B, that work rides in the same per-repo migration PR as the `checks`
+caller, so every repo is migrated once. A repo whose `ci.yml` is not Python-shaped takes only the
+`checks` caller. The phase letters are kept rather than renumbered, because they are already cited in
+notes, PRs and commit messages.
 
 ### Why `data-warehouse` is the pilot
 
@@ -579,6 +651,10 @@ Three properties, and it is the only repo with all three:
   embarrassment, not an outage.
 - **It is one of the two largest consumers,** so the savings land inside the pilot and the measurement
   in §5 is taken on a repo that matters.
+
+With G ahead of B it has a further use: it carries a per-repo extra, `dbt-parse`, beside the standard
+jobs, so the pilot also exercises §6's mixed caller shape — a `uses:` job alongside ordinary ones,
+feeding one caller-side `ci` aggregate — on the first real repo rather than a later one.
 
 Two adjustments because it is busy (~30 active branches): **iterate on one throwaway PR, not on
 `dev`**, and **tell whoever is working in there before flipping.** A pilot that surprises its
@@ -603,8 +679,9 @@ Phase A means Phase A cannot reach its own exit criterion.
    - `test_guard_matrix.sh:51-55` — hard-asserts, anchored, that the checkout carries
      `ref: ${{ github.base_ref }}`. On the consumer path there is no base-branch checkout at all. The
      assertion splits: the base-branch form stays asserted for the `github.repository` self-path, and
-     the consumer path asserts that the guard runs from `RUNNER_TEMP`, staged at the ref in
-     `github.job_workflow_ref`
+     the consumer path asserts that the guard runs from `RUNNER_TEMP`, staged at the ref the workflow was
+     called at (specified here as `github.job_workflow_ref`, which is never populated; the ref now
+     comes from the OIDC claim — §2)
    - `test_sca.sh:157` — asserts the literal `rm -rf .trusted-base`. The directory is renamed
      (`.trusted-template`), but the property worth asserting was never the name: assert that the
      staging directory is deleted **before** anything scans the tree
@@ -654,6 +731,13 @@ generated repos. That is Phase E's last item — see §2.
   2. **Merge the caller PR.** `checks` stops reporting; `checks / checks` starts.
   3. **Re-add the context**, now `checks / checks`. From here `./scripts/apply-rulesets.sh` does the
      right thing unaided, because the local `checks.yml` is a caller.
+
+  **The caller PR in step 2 must carry `id-token: write` on its `checks` job** (§2). Without it the
+  caller never reports `checks / checks`, and step 3 would require a context nothing emits — leaving
+  `main`/`staging`/`dev` unmergeable rather than reddening a PR. `apply-rulesets.sh` now refuses to
+  require `checks / checks` from a caller without the grant, which turns that mistake into a local
+  error at step 3; the hand-run `gh api` call in step 1 has no such check. The same holds for
+  `avenue-z-reporting-v2` in Phase F.
 
   **Name the window: between steps 1 and 3, `main`/`staging`/`dev` in `data-contract` require no status
   check at all.** The rest of the ruleset — the pull-request requirement, `non_fast_forward`,
@@ -736,6 +820,9 @@ PR-scoped secret scan. Layer 1 covers those. `if:` is permitted on a `uses:` job
 - `on:` declares `workflow_call`, `pull_request`, and `schedule`
 - the declared `inputs:` / `secrets:` sets match the golden **exactly** — additions included, not just
   removals
+- the `permissions:` the `checks` job requests. **Added in `repo-template#82`**; before that the
+  tripwire could not see this caller-breaking surface move (§1 clause 4), which is how `id-token: write`
+  reached `v1` unrefused. Open item 14.
 
 Any change to the consumer-visible surface reddens the test. The author must then update the golden
 **in the same PR**, and *that edit is the deliberate "this is v2" decision* — visible in the diff,
@@ -863,6 +950,11 @@ holding this token is the *only* thing that should be able to move `v1`, and a r
 GitHub Actions bypass actor that lets this workflow through and nobody else — is what makes that true
 rather than merely intended.
 
+**Superseded on both counts.** `advance-v1.yml` shipped with `contents: read`: the ruleset honours a
+dedicated GitHub App, not `contents: write`, so the tag is moved with that app's token (§1, Open item
+8). And `checks.yml` now requests `id-token: write` from every caller (§2), an elevated permission this
+paragraph did not anticipate.
+
 ### Uncovered by construction
 
 **The negative case at the workflow layer — "a failing gate turns the caller red" — is provable only
@@ -887,7 +979,7 @@ Nothing here catches it, and building something that would — a golden file ove
 than gate *surface* — is a larger piece of work than this design contains. It is therefore a **named
 accepted risk**, recorded in `## Open items`, with the only two things that genuinely reduce it stated
 as what they are and no more: the `dev → staging → main` flow gives such a change a soak on two
-branches before it reaches the tag, and §1's three clauses are written down, so "is this clause 3?" is
+branches before it reaches the tag, and §1's clauses are written down, so "is this clause 3?" is
 a question with an answer rather than a matter of taste.
 
 ---
@@ -946,6 +1038,9 @@ For `client-satisfaction-report` (5 jobs × 112 runs over the 8-day sample):
 | Fold `bandit` into the `ci` aggregate job as a step | 112 min |
 | **Combined (5 jobs → 2)** | **336 of 563 (60%) ≈ 1,260/month** |
 
+(Superseded in part by §6 decision 2: apps run no matrix at all, on PRs or anywhere else, so the
+"full matrix on push to `dev`" half of the first row no longer exists.)
+
 `data-warehouse` (7 jobs × 71 runs): the same two changes plus folding `typecheck` (26s) into `test`,
 ≈ 284 of 567. **`dbt-parse` stays** — at 74s it is real work with its own failure mode, and merging it
 would trade a diagnosable check for one billed minute.
@@ -955,6 +1050,11 @@ pass on 3.13 and break on 3.11, and that will now be caught at the `dev` merge r
 by someone who is no longer looking at that change. It is defensible for a small team where `dev` is
 the integration branch and the full matrix still runs there. It is not free, and presenting it as free
 is how a team ends up surprised by the first 3.11 break and blames the wrong change.
+
+(Superseded by §6 decision 2: for an app there is no full matrix anywhere, on `dev` or otherwise, so
+the recovery this paragraph describes does not exist for apps — the coverage reduction is total, not
+deferred to `dev`. The reasoning stands as the trade-off argued here before that decision, and as the
+trade-off a library — which still gets the matrix — does not incur.)
 
 ### A trap to name and reject
 
@@ -967,19 +1067,24 @@ saving is real and someone will propose it again.
 
 ---
 
-## Section 6 — `python-ci.yml@v1` (Phases G–H, committed)
+## Section 6 — `python-ci.yml` (Phase G, moved ahead of B)
 
-`ci.yml` propagates too. **This is deferred in sequence, not in commitment**, and it is recorded here
-so the deferral does not read as an omission.
+`ci.yml` propagates too. **An earlier version of this section deferred it until after the pilot; it now
+comes before it.** The reasoning for the reversal is at the end of this section.
 
 The input surface is small, because variation is only the three axes of established fact 10:
 
 ```yaml
 with:
-  python-versions: '["3.11","3.12","3.13"]'
-  check-command: make check      # lets the 3 laggards migrate on their own clock
-  run-bandit: true               # covers az-* and noble-clone until they catch up
+  python-versions: '["3.11"]'  # REQUIRED. An app: the one version its Dockerfile deploys on.
+                               # A library: every version it supports.
+  check-command: make check    # lets the 3 laggards migrate on their own clock
+  run-bandit: true             # covers az-* and noble-clone until they catch up
 ```
+
+`python-versions` has no default on purpose (decision 2 below): the version belongs next to the
+Dockerfile that fixes it, not in `repo-template`, where bumping a shared default would be a clause-3
+break for every caller at once.
 
 Two of the three axes become inputs. **The third disappears for free, and it is the sleeper win:**
 pinned action SHAs live inside the reusable workflow, so Dependabot's `checkout` / `setup-python` bumps
@@ -990,8 +1095,12 @@ Per-repo extras still work — a workflow may freely mix `uses:` jobs with ordin
 
 ```yaml
 jobs:
-  standard:
-    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@v1
+  standard:                       # the LIBRARY shape: every version it supports. An app lists just
+                                   # the one version its Dockerfile deploys on.
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+    permissions:
+      contents: read
+      id-token: write
     with: { python-versions: '["3.11","3.12","3.13"]' }
   dbt-parse:
     runs-on: ubuntu-latest
@@ -1009,15 +1118,94 @@ Two consequences worth stating explicitly:
 - **The §5 job-count reduction lives inside the reusable workflow,** so it propagates by construction
   instead of being hand-ported into 10 repos and then hand-ported again the next time it changes.
 
-**Sequencing rationale:** after Phase B, because designing a second reusable workflow before the first
-has run in production even once is the wrong order of risk — every open question in §2 is equally open
-for `python-ci.yml`, and answering them twice is waste. If Phase G follows Phase B closely, **the §5
-interim fix becomes optional**: the job-count reduction is ported into callers once rather than twice.
+### Sequencing: G now runs ahead of B
+
+**An earlier version of this section put G after B**, on this reasoning: designing a second reusable
+workflow before the first had run in production even once was the wrong order of risk, because every
+open question in §2 was equally open for `python-ci.yml`, and answering them twice would be waste. That
+was right when written. It no longer holds:
+
+- **The shared questions are answered.** The lab settled the §2 mechanics (Step 0), and the OIDC
+  staging fix they forced is proven end to end on a real `init-repo.sh` adoption. `python-ci.yml` needs
+  the same staging — the python `ci.yml` runs `scripts/bandit-gate.sh` and
+  `scripts/ci-aggregate-gate.sh` — so it inherits a proven mechanism rather than re-answering anything.
+- **Nothing B still owes is a precondition for building G.** B's remaining work — a bad PR going red on
+  a real consumer, real per-job durations, the org's Actions policy — is measurement on a billed repo,
+  and it applies to both workflows equally.
+- **G first means the fleet migrates once.** After B, each repo gets one PR carrying both callers,
+  instead of a `checks` round of eleven PRs followed by a `ci` round of ten, each with its own pilot and
+  its own round of warning repo owners.
+- **It is where most of the saving is.** §5's job-count reduction is about 60% of
+  `client-satisfaction-report`'s `ci` minutes; the `checks` collapse is the smaller lever. Minutes only
+  fall when repos migrate, and billing blocks B exactly as much whether or not G comes first, so
+  building G first delays nothing and means the pilot measures the change that matters most.
+- **The §5 interim fix is no longer needed.** Hand-porting the job-count reduction into callers was only
+  worth it while G was far off.
+
+**What the reversal costs, stated rather than discovered:**
+
+- **The pilot carries more at once.** If something specific to Avenue-Z — its unread org Actions
+  policy, say — breaks cross-repo calls, both workflows fail together. The pilot is still one private
+  repo with inert rulesets (established fact 2), so the failure is still embarrassment, not an outage.
+- **The 60-second question moves into the pilot.** Folding jobs only saves minutes while the merged job
+  stays under a billed minute, and that can only be measured on a large tree on a billed repo — which is
+  B. G ships the reduction; B confirms or revises it.
+- **A `python-ci.yml` regression has a larger blast radius than a `checks.yml` one.** A bad tag advance
+  reddens every Python repo's `ci`, not only the governance check. §4's layers have to be rebuilt for
+  this workflow, not assumed to transfer.
 
 | Phase | Work |
 |---|---|
-| **G** | `python-ci.yml` reusable, with the §5 job-count reduction inside it, cut as `@v1` |
-| **H** | Migrate the 10 repos' `ci.yml` to callers |
+| **G** | `python-ci.yml` reusable, with the §5 job-count reduction inside it, lab-proven and published behind a tag — before B |
+| ~~H~~ | Folded into B–E: each repo's migration PR carries both callers (§3) |
+
+### Decisions before G starts
+
+1. **Does `python-ci.yml` share `v1` with `checks.yml`, or get its own tag? — decided 2026-09-15: its
+   own tag.** Sharing would have bought one advance workflow, one set of point tags, and one ref per
+   repo. It was rejected because it couples the two workflows in the places that hurt:
+   - **Rollback.** A repo escaping a broken `python-ci.yml` by pinning `@v1.N.0` would also pin its
+     security gate back, losing every `checks.yml` fix since.
+   - **`v2`.** A breaking `python-ci.yml` change would force every repo to bump its governance caller
+     too, though the gate never changed.
+   - **Cadence.** CI changes are far more often clause-3 breaks than gate changes are: bumping a tool
+     the workflow pins, such as `bandit`, can flag existing code and turn green repos red with nothing in
+     them changed. Under a shared tag, each of those refusals would also stall propagation of security
+     fixes.
+
+   The cost is smaller than an earlier version of this item priced it. Both tags live in
+   `repo-template`; one tag ruleset can target both, with the same `avenue-z-v1-tag-advance` app as its
+   bypass; and the advance workflow can be parameterised rather than duplicated. The tag's name is the
+   G plan's to choose (e.g. `python-ci-v1`). The `@v1` in this section's examples is a placeholder.
+2. **The matrix — revised 2026-09-22: one version, the deployed one; no matrix for apps.** An
+   earlier version of this item accepted one version on PRs and left open where the full matrix
+   would run. The question dissolved on inspection: an app ships one image and runs exactly one
+   Python (the template's is `python:3.11-slim`), so the other matrix legs tested versions that
+   never run in production. The caller now lists the version its Dockerfile deploys on, and
+   `test_python_ci.sh` asserts the two agree. A library installed by other repos (e.g.
+   `glean-chat-api-client`) lists every version it supports and gets the matrix. The cost: a repo
+   that bumps its Dockerfile's Python finds breakage on that PR rather than earlier — which, for an
+   app, is when it matters. Tag name, per decision 1: `python-ci-v1`, point tags `python-ci-v1.N.0`.
+3. **Does the contract record permissions? — decided 2026-09-15: yes, for both workflows.** Callers of
+   `python-ci.yml` will need `id-token: write` too, if it stages scripts the way `checks.yml` does, and
+   §1's clause 4 applies to it from its first tag. So its golden contract file is born recording the
+   permissions it requests. `checks.yml`'s golden gains the same field in `repo-template#82` (Open
+   item 14).
+4. **Where it is proven — done 2026-09-15: `avenue-z-ci-lab/adopter-python`.** `adopter-private` is a
+   `node` adoption (its SCA scan read a `package-lock.json`), so G needed a Python one. `adopter-python`
+   is a private repo built exactly as a real adopter would be: `repo-template` at `main` (`71c548f`),
+   then `init-repo.sh python`. Its first PR is also **the first consumer run against the real `v1` tag**
+   (`adopter-private`'s green run was pinned at a branch): `checks / checks` green in 12s, with the gate
+   scripts staged from `refs/tags/v1` via the OIDC claim, and the generated `ci` green —
+   `test (3.11)`/`(3.12)`/`(3.13)` in 14–21s, the `ci` aggregate in 11s. It showed two further things.
+   One is Open item 15. The other is that **`init-repo.sh`'s own push of `main` started no `ci` run**,
+   despite `ci.yml` declaring `push: [main]`. That was not the trigger: the repo's workflows were
+   registered at 18:57:19Z, about fifty seconds *after* its first pushes at 18:56:29Z, and once they
+   were, a promotion merge to `main` ran the full matrix (run `35012268228`) while the promotion
+   pushes to `dev` and `staging` ran nothing — exactly `repo-template#73`'s shape. The cause is
+   inferred from that ordering, not proven. It costs nothing a real adopter needs, because the
+   initial `main` commit is identical to `dev`, and PR runs cover everything after it. But a brand-new
+   repo's first push is not evidence that its triggers work.
 
 ---
 
@@ -1030,6 +1218,11 @@ Recorded as open, not as decided:
    `GITHUB_TOKEN` can check out `Avenue-Z/repo-template` at all. All three are Phase B's job. The
    design is written as though the documented behaviour holds; if it does not, §2 is the section that
    changes.
+
+   **Settled in the lab, 2026-09-12** (Step 0): all three are yes, under default org Actions policy.
+   The fourth question beside them was not — `github.job_workflow_ref` is never populated — and §2
+   changed exactly as this item said it would. Avenue-Z's own Actions policy is still unread; Phase B
+   reads it.
 2. **Hand-porting `checks.yml` to `client-satisfaction-report` for early relief — deliberately
    deferred.** Billing is blocked, so the meter is not currently running and the urgency is
    artificial. Phase B will measure the real per-job duration on a large tree and therefore the real
@@ -1065,8 +1258,8 @@ Recorded as open, not as decided:
    `.github/CODEOWNERS`, and the shipped ruleset sets `require_code_owner_review: false`.
 
    **Consumers are strictly stronger, not weaker.** All eleven get their scripts from the immutable tag
-   via `github.job_workflow_ref`, entirely out of reach of the PR under review. The weakening is scoped
-   to the one repo that cannot bootstrap any other way.
+   via the OIDC `job_workflow_ref` claim (§2), entirely out of reach of the PR under review. The
+   weakening is scoped to the one repo that cannot bootstrap any other way.
 
    **Accepted risk, scoped to this repo**, on the grounds that the alternative is a template that cannot
    change its own gate. Revisit if `.github/CODEOWNERS` ever goes live here, which would make
@@ -1117,6 +1310,70 @@ Recorded as open, not as decided:
     the dispatch input's own description — an operator who meets this reads the escape on the form
     they are already looking at. **Accepted for Phase A**, because the alternative is exempting the
     template's own tree from its own gate. Revisit if it ever actually fires.
+13. **`id-token: write` is a grant every caller hands the template, and forgetting it is silent** (§2).
+    The grant lets the called workflow mint an OIDC token for any audience in the caller's repo —
+    first-party code, remote risk, but real. Omitting it produces a `startup_failure` with no context
+    reported, not a red check. `init-repo.sh`, `test_init_repo.sh` and `apply-rulesets.sh` cover newly
+    generated repos and ruleset application; a hand-written migration caller is covered only once
+    `apply-rulesets.sh` is run in it. **The alternative not taken:** dropping `checks.yml`'s own
+    `permissions:` block, so the called workflow inherits the caller's grant, would turn that startup
+    failure into §2's graceful red refusal — at the price of giving `repo-template`'s own runs whatever
+    the org-default `GITHUB_TOKEN` scope happens to be. **Accepted**, and recorded as a trade.
+14. **The tripwire does not record permissions** (§1 clause 4, §4). `.github/reusable-contract.json`
+    holds the job key, the triggers, and the input and secret sets. A new permission requested by
+    `checks.yml` moves none of them, so `advance-v1` advances straight past a caller-breaking change —
+    which is what happened with `id-token: write` in `v1.4.0`. The obvious fix is to add the requested
+    permissions to the golden file and to `test_reusable_contract.sh`. **Decided and done in
+    `repo-template#82`**, before G, so that `python-ci.yml`'s contract is born with it rather than
+    retrofitted. Moving the golden is itself a contract change: the first `advance-v1` after #82 reaches
+    `main` refuses until it is acknowledged via `workflow_dispatch`.
+15. **The SCA half of `checks` scans nothing on a Python repo without a lockfile.** Observed on
+    `adopter-python`'s first PR: *"no osv-scanner report (no packages/lockfiles found) — nothing to
+    scan"*, and the gate passes. The python template ships `dependencies = []` and no lockfile or
+    `requirements*.txt`, so on a fresh adoption that is correct. But osv-scanner reads lockfiles and
+    requirements files, not `pyproject.toml` ranges, so **a real Python repo that declares its
+    dependencies only in `pyproject.toml` gets no dependency gate at all, and a green check that says
+    nothing.** Two consequences: Phase B's deliberately-bad-PR test cannot exercise SCA on a Python
+    adoption until the repo carries a file osv-scanner reads, and each migration PR should check what
+    that repo actually commits. Whether the gate should *fail* rather than pass when a repo declares
+    dependencies but ships nothing scannable is **undecided** — it would be a new failure condition
+    unrelated to the caller's code (§1 clause 3), so it cannot ride `v1` silently either way.
+16. **Both moving tags gate on ONE `template-tests` run's conclusion** (§4, §6 decision 1). `v1` and
+    `python-ci-v1` both advance off the same workflow's `push` result. A break in the Python
+    template's layer-2 self-call — an unpinned ruff/mypy release failing `make check` in
+    `templates/python`, say — stalls the `v1` advance too, including a security fix to `checks.yml`,
+    and it shows as the advance being SKIPPED (`workflow_run` conclusion `!= success`), not as a red
+    check anywhere. Mitigation options, named and not decided: pin the template's own dev tools; or
+    split the gate per tag. **Undecided.**
+17. **`advance-v1.yml`'s concurrency group is shared by both tags, with `cancel-in-progress: false`**
+    (§4). GitHub keeps at most ONE pending run per group, so a queued per-tag `workflow_dispatch`
+    acknowledgement can be SILENTLY replaced by a later run while another is still in progress — the
+    dispatcher sees their run accepted and never learns it did not execute. Whoever dispatches must
+    confirm their run actually ran, not merely that it was queued.
+18. **The tag ruleset exists only as live GitHub API state** (§1). `v1-tag-protection` (id
+    `22951344`; `python-ci-v1` is to be added to it in Phase G) is applied out of band, the same way
+    `apply-rulesets.sh` applies the branch ruleset. Nothing in the repo reproduces its JSON, so it
+    cannot be reviewed in a PR, diffed, or restored from source if it is ever deleted or
+    misconfigured — only re-created by hand against the API.
+19. **`python-ci.yml` is the first reusable workflow to run arbitrary PR and dependency code with the
+    OIDC token endpoint live in its environment** (§2, §4). Harmless today, because every identity in
+    the `github` Workload Identity pool can impersonate only the read-only `pkg-reader`
+    (template-docs/specs/2026-09-21-private-python-packages-design.md). But a future Workload
+    Identity grant must NEVER trust a `python-ci.yml` `job_workflow_ref` (or a bare repository id)
+    for anything that writes.
+
+    **The Bandit verdict is inside that blast radius too.** Running Bandit before `pip install -e`
+    protects the *scan*, not the *verdict*: the verdict step runs after the check command in the same
+    job, and executes `$RUNNER_TEMP/trusted-scripts/ci-aggregate-gate.sh`, which earlier PR code can
+    overwrite (`GITHUB_ENV` and `GITHUB_PATH` also reach it). Demonstrated in the PR 84 review: a
+    `tests/conftest.py` that rewrites the staged script as `exit 0` turned a real B602 HIGH/HIGH into
+    a green verdict. **Accepted, not fixed.** A caller can already set `run-bandit: false` in its own
+    `ci.yml`, so Bandit was never enforceable against a deliberate author, and moving the verdict to
+    a job with no PR code costs a billed job without closing that. The realistic exposure is a
+    compromised dependency, which has worse options than silencing Bandit. **Phase G PR 2 inherits
+    this:** the template's own `ci` job today reaches its Bandit verdict without executing PR code;
+    once the template becomes a `python-ci.yml` caller, generated repos lose that property. Accepted
+    on the same grounds.
 
 ---
 
@@ -1148,7 +1405,8 @@ Recorded as open, not as decided:
   dropped, because it is the right answer if the org ever leaves Free. See §2.
 - **A PAT or a dedicated GitHub App to move the `v1` tag.** Tighter than bypassing the tag ruleset for
   the GitHub Actions app, and it costs a long-lived credential to store and rotate in a repo that today
-  needs none (established fact 3). See §1.
+  needs none (established fact 3). See §1. **Reversed in Phase A:** the GitHub Actions app cannot be a
+  ruleset bypass actor, so a dedicated app is what shipped — see §1 and Open item 8.
 - **Splitting `repo-ruleset.json` into one file per population.** It would duplicate the ruleset's
   other four rules and create a second drift surface — the thing this design exists to remove. The
   file-gated `add_context` in §2 reaches the same place with one file and the script's own precedent.

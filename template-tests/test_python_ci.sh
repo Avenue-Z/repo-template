@@ -148,6 +148,25 @@ echo "python-ci: the dead context field is not read anywhere"
 assert_nomatch "no step reads github.job_workflow_ref (that context is ALWAYS empty)" \
   'github\.job_workflow_ref' "$(python3 -c 'import yaml,sys; print(yaml.safe_dump(yaml.safe_load(open(sys.argv[1]))))' "$WORKFLOW")"
 
+# LAYER 2 (spec §4). It must be a job INSIDE template-tests.yml, because advance-v1.yml chains off
+# that workflow run's conclusion: a self-call anywhere else gates nothing, and python-ci-v1 could
+# advance carrying a workflow nobody can call.
+echo "python-ci: the self-call gates the tag"
+sc="$(python3 - .github/workflows/template-tests.yml <<'PY'
+import json, sys, yaml
+j = (yaml.safe_load(open(sys.argv[1])).get('jobs') or {}).get('self-call-python-ci') or {}
+print(json.dumps({"uses": j.get('uses'), "if": j.get('if'), "perms": j.get('permissions'), "with": j.get('with') or {}}))
+PY
+)"
+assert_eq "./.github/workflows/python-ci.yml" "$(jq -r .uses <<<"$sc")" "a template-tests job calls python-ci.yml"
+assert_eq "github.event_name == 'push'" "$(jq -r .if <<<"$sc")" "push only (one billed job per push, not per PR)"
+assert_eq '{"contents":"read","id-token":"write"}' "$(jq -c .perms <<<"$sc")" \
+  "the self-call grants id-token: write (granting less is a startup_failure of ALL of template-tests)"
+assert_eq "templates/python" "$(jq -r '.with["working-directory"]' <<<"$sc")" "it runs against the Python template"
+dockerfile_ver="$(sed -nE 's/^FROM python:([0-9]+\.[0-9]+).*/\1/p' templates/python/Dockerfile | head -1)"
+assert_eq "[\"${dockerfile_ver}\"]" "$(jq -c '.with["python-versions"]|fromjson' <<<"$sc")" \
+  "it tests the version the template's Dockerfile deploys on"
+
 # ---------------------------------------------------------------------------------------
 # THE VERDICT IS THE ONLY THING THAT FAILS THE JOB. Every gate runs under continue-on-error, so a
 # broken verdict turns every failure GREEN. Drive the real step against the outcomes a leg produces.

@@ -48,6 +48,8 @@ print(json.dumps({
     "bandit_if": strip(by_id.get('bandit', {}).get('if', '')),
     "verdict": by_name.get('verdict', {}),
     "verdict_bandit_expected": strip((by_name.get('verdict', {}).get('env') or {}).get('BANDIT_EXPECTED', '')),
+    "bandit_idx_by_id": next((i for i, s in enumerate(steps) if s.get('id') == 'bandit'), None),
+    "pip_install_idx_by_run": next((i for i, s in enumerate(steps) if 'pip install -e' in str(s.get('run', ''))), None),
 }))
 PY
 )"
@@ -127,6 +129,18 @@ assert_match "bandit is judged by the STAGED gate script" '"\$\{RUNNER_TEMP\}/tr
 assert_nomatch "bandit never runs the workspace copy of the gate" '(^|[^-])scripts/bandit-gate\.sh' "$bandit_code"
 assert_match "the tier comes from the repo ROOT's policy file, whatever the working directory" \
   '\$\{GITHUB_WORKSPACE\}/\.github/sca-policy\.json' "$bandit_code"
+
+echo "python-ci: bandit runs before pip install -e (no installed package, no PR code, can influence it)"
+# Found by id (the bandit step) and by run content (the install step has no id/name), never by a
+# fixed index — steps around them can be added or removed without this test moving.
+bandit_idx="$(fr '.bandit_idx_by_id // "missing"')"
+pip_install_idx="$(fr '.pip_install_idx_by_run // "missing"')"
+assert_ok "the bandit step (id: bandit) was found" [ "$bandit_idx" != "missing" ]
+assert_ok "the pip install -e step was found (by run content)" [ "$pip_install_idx" != "missing" ]
+if [ "$bandit_idx" != "missing" ] && [ "$pip_install_idx" != "missing" ]; then
+  assert_ok "bandit (index ${bandit_idx}) runs before pip install -e (index ${pip_install_idx})" \
+    [ "$bandit_idx" -lt "$pip_install_idx" ]
+fi
 
 echo "python-ci: the check step actually runs CHECK_COMMAND"
 # Nothing above executes the check step's body — the continue-on-error assertion and the env-wiring

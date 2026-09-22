@@ -1095,8 +1095,12 @@ Per-repo extras still work — a workflow may freely mix `uses:` jobs with ordin
 
 ```yaml
 jobs:
-  standard:
-    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@v1
+  standard:                       # the LIBRARY shape: every version it supports. An app lists just
+                                   # the one version its Dockerfile deploys on.
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+    permissions:
+      contents: read
+      id-token: write
     with: { python-versions: '["3.11","3.12","3.13"]' }
   dbt-parse:
     runs-on: ubuntu-latest
@@ -1351,6 +1355,12 @@ Recorded as open, not as decided:
     `apply-rulesets.sh` applies the branch ruleset. Nothing in the repo reproduces its JSON, so it
     cannot be reviewed in a PR, diffed, or restored from source if it is ever deleted or
     misconfigured — only re-created by hand against the API.
+19. **`python-ci.yml` is the first reusable workflow to run arbitrary PR and dependency code with the
+    OIDC token endpoint live in its environment** (§2, §4). Harmless today, because every identity in
+    the `github` Workload Identity pool can impersonate only the read-only `pkg-reader`
+    (template-docs/specs/2026-09-21-private-python-packages-design.md). But a future Workload
+    Identity grant must NEVER trust a `python-ci.yml` `job_workflow_ref` (or a bare repository id)
+    for anything that writes.
 
 ---
 

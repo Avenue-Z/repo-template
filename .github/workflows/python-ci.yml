@@ -121,7 +121,8 @@ jobs:
           path: .trusted-template
 
       # At the workspace ROOT, not the job's working-directory: `scripts/` (repo-template's own runs)
-      # and `.trusted-template` (everyone else's) both live there.
+      # and `.trusted-template` (everyone else's) both live there. Staging PINS the gate scripts to
+      # the template's version, but it does NOT isolate them from PR code later in the same job.
       - name: Stage the trusted scripts outside the workspace
         working-directory: ${{ github.workspace }}
         env:
@@ -143,21 +144,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # NOT a gate and not continue-on-error: if the install dies, the check below is SKIPPED, and the
-      # verdict reads `skipped` as a failure. One red, for the real reason, in the log.
-      - run: pip install -e ".[dev]"
-
-      # The caller supplies this command in its own workflow file, which is the caller's own code;
-      # it goes through env so the value is never spliced into the script text.
-      - name: 'gate: the check command'
-        id: check
-        continue-on-error: true
-        env:
-          CHECK_COMMAND: ${{ inputs.check-command }}
-        run: |
-          set -euo pipefail
-          eval "${CHECK_COMMAND}"
-
+      # BEFORE `pip install -e ".[dev]"`: the Bandit scan needs no installed package, so it runs
+      # BEFORE any PR code or dependency install hook executes, and its result can't be influenced by
+      # that code.
       # FIRST LEG ONLY (D4). An app has one leg; a library gains nothing by running pattern SAST over the
       # same source once per interpreter. The SAME expression appears on the next step and on the
       # verdict's BANDIT_EXPECTED, and test_python_ci.sh asserts all three are identical.
@@ -181,6 +170,21 @@ jobs:
           esac
           # The tier file is at the REPO ROOT whatever the working directory is.
           "${RUNNER_TEMP}/trusted-scripts/bandit-gate.sh" bandit.json "${GITHUB_WORKSPACE}/.github/sca-policy.json"
+
+      # NOT a gate and not continue-on-error: if the install dies, the check below is SKIPPED, and the
+      # verdict reads `skipped` as a failure. One red, for the real reason, in the log.
+      - run: pip install -e ".[dev]"
+
+      # The caller supplies this command in its own workflow file, which is the caller's own code;
+      # it goes through env so the value is never spliced into the script text.
+      - name: 'gate: the check command'
+        id: check
+        continue-on-error: true
+        env:
+          CHECK_COMMAND: ${{ inputs.check-command }}
+        run: |
+          set -euo pipefail
+          eval "${CHECK_COMMAND}"
 
       # THE ONLY THING THAT FAILS THIS JOB. Every gate above recorded an outcome instead of ending the
       # run; this step reads them through the staged ci-aggregate-gate.sh, the same "anything that is

@@ -229,9 +229,11 @@ assert_eq 0 "$rc" "the v1 row exits 0 on a python-ci-v1 dispatch"
 assert_eq "advance=false" "$(cat "$d/out" 2>/dev/null)" "and decides NOT to advance"
 rm -rf "$d"
 
-# ...AND IT DOES SO BEFORE TOUCHING THE NETWORK. `origin` here is a path that does not exist, so any
-# fetch fails and the decide step refuses (rc 1). A row that skipped only AFTER fetching would turn
-# every dispatch red on the row nobody asked about whenever the fetch flakes.
+# ...AND IT DOES SO BEFORE ANY FETCH IN THE DECIDE STEP. `origin` here is a path that does not
+# exist, so any fetch fails and the decide step refuses (rc 1). A row that skipped only AFTER
+# fetching would turn every dispatch red on the row nobody asked about whenever the fetch flakes.
+# The app-token mint and the full checkout still run first in that row — this is about the decide
+# step's OWN fetches, not about the job touching no network at all.
 echo "advance: the other-tag skip runs before any fetch"
 d="$(mktemp -d)"
 ( cd "$d" && git init -q . && git symbolic-ref HEAD refs/heads/main && git config user.email t@t && git config user.name t \

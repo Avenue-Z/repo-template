@@ -147,9 +147,10 @@ jobs:
 
           # Every refusal below stages NOTHING and reports NO verdict. That is the posture: guessing a
           # ref means running a gate from somewhere arbitrary and calling the result green.
-          # No endpoint means the caller did not grant `id-token: write` on its `checks` job.
+          # No endpoint means the caller did not grant `id-token: write` on the job that calls this
+          # workflow.
           [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || {
-            echo "::error::no OIDC token endpoint in this job — the calling repository must grant 'permissions: id-token: write' on its 'checks' job. Refusing to stage gate scripts from an unknown ref"
+            echo "::error::no OIDC token endpoint in this job — the calling repository must grant 'permissions: id-token: write' on the job that calls this workflow. Refusing to stage gate scripts from an unknown ref"
             exit 1
           }
 

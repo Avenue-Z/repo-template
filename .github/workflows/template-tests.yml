@@ -150,3 +150,21 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/checks.yml
+
+  # LAYER 2 FOR python-ci.yml — the same reasoning as `self-call` above, for the second reusable
+  # workflow: proves python-ci.yml RESOLVES, EXPANDS and RUNS GREEN, and puts that result inside the
+  # run whose conclusion gates the python-ci-v1 advance. It runs the workflow for real against
+  # templates/python (repo-template's root has no Python project, which is the only reason the
+  # working-directory input exists) at the version the template's Dockerfile deploys on.
+  #
+  # Same permissions rule as `self-call`: python-ci.yml requests id-token: write, and granting less
+  # fails the WHOLE workflow at startup, including on pull_request where this job never runs.
+  self-call-python-ci:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      python-versions: '["3.11"]'
+      working-directory: templates/python

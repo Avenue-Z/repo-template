@@ -1,0 +1,16 @@
+{
+  "_comment": "THE CONSUMER-VISIBLE SURFACE OF python-ci.yml: the job key, the triggers, every declared input WITH its type, required flag and default (a changed default changes every caller), the secrets, and the permissions the test job requests (a caller granting less is a startup_failure with no context reported, not a red check). Editing this file is the deliberate decision that the surface moved. template-tests/test_reusable_contract.sh asserts python-ci.yml matches it exactly, and .github/workflows/advance-v1.yml REFUSES to advance python-ci-v1 while this file differs from what python-ci-v1 points at. See template-docs/specs/2026-09-09-reusable-workflows-design.md sections 1, 4 and 6.",
+  "job": "test",
+  "on": ["workflow_call"],
+  "permissions": {
+    "contents": "read",
+    "id-token": "write"
+  },
+  "inputs": [
+    {"name": "check-command", "type": "string", "required": false, "default": "make check"},
+    {"name": "python-versions", "type": "string", "required": true},
+    {"name": "run-bandit", "type": "boolean", "required": false, "default": true},
+    {"name": "working-directory", "type": "string", "required": false, "default": "."}
+  ],
+  "secrets": []
+}

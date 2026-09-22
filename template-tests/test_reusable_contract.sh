@@ -28,7 +28,8 @@ echo "reusable contract: the golden file and the workflow both exist"
 assert_file "the golden contract file exists" "$GOLDEN"
 assert_file "the workflow exists" "$WORKFLOW"
 
-actual="$(python3 - "$WORKFLOW" <<'PY'
+surface() { # <workflow> <job> -- the consumer-visible surface as canonical JSON
+  python3 - "$1" "$2" <<'PY'
 import json, sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 # PyYAML resolves an unquoted `on:` key to the BOOLEAN True (the YAML 1.1 y/n/on/off rule). Reading
@@ -37,17 +38,23 @@ d = yaml.safe_load(open(sys.argv[1]))
 on = d.get('on', d.get(True)) or {}
 jobs = list(d.get('jobs', {}))
 call = (on.get('workflow_call') or {}) if isinstance(on, dict) else {}
-checks_job = d.get('jobs', {}).get('checks') or {}
-perms = checks_job['permissions'] if 'permissions' in checks_job else d.get('permissions')
+job = d.get('jobs', {}).get(sys.argv[2]) or {}
+perms = job['permissions'] if 'permissions' in job else d.get('permissions')
+inputs = sorted(
+    ({"name": k, **{f: v[f] for f in ("type", "required", "default") if f in (v or {})}}
+     for k, v in (call.get('inputs') or {}).items()),
+    key=lambda i: i["name"])
 print(json.dumps({
     "job": jobs[0] if len(jobs) == 1 else "|".join(jobs),
     "permissions": perms,
     "on": sorted(on) if isinstance(on, dict) else sorted(on if isinstance(on, list) else [on]),
-    "inputs": sorted((call.get('inputs') or {})),
+    "inputs": inputs,
     "secrets": sorted((call.get('secrets') or {})),
 }, sort_keys=True, separators=(',', ':')))
 PY
-)"
+}
+
+actual="$(surface "$WORKFLOW" checks)"
 expected="$(jq -Sc 'del(._comment)' "$GOLDEN")"
 
 echo "reusable contract: checks.yml matches the golden EXACTLY (additions included, not just removals)"
@@ -104,5 +111,21 @@ assert_eq "write" "$(jq -r '."id-token" // "ABSENT"' <<<"$sc_perms")" \
   "the self-call job grants id-token: write (checks.yml requests it; granting less kills the workflow at startup)"
 assert_eq "read" "$(jq -r '.contents // "ABSENT"' <<<"$sc_perms")" \
   "the self-call job still grants contents: read (a job block REPLACES the workflow-level one)"
+
+# ---------------------------------------------------------------------------------------
+# THE SECOND REUSABLE WORKFLOW GETS THE SAME TRIPWIRE (spec §6: "§4's layers have to be rebuilt for
+# this workflow, not assumed to transfer"). advance-v1.yml's python-ci-v1 row compares THIS golden.
+PYWF=.github/workflows/python-ci.yml
+PYGOLDEN=.github/reusable-contract-python-ci.json
+echo "reusable contract: python-ci.yml matches its golden EXACTLY"
+assert_file "the python-ci golden exists" "$PYGOLDEN"
+py_actual="$(surface "$PYWF" test)"
+py_expected="$(jq -Sc 'del(._comment)' "$PYGOLDEN" 2>/dev/null || echo missing)"
+assert_eq "$py_expected" "$py_actual" "the consumer-visible surface of python-ci.yml == $PYGOLDEN"
+assert_eq '["workflow_call"]' "$(jq -c '.on' <<<"$py_actual")" "python-ci.yml is called, never triggered"
+assert_eq "write" "$(jq -r '.permissions."id-token" // "ABSENT"' <<<"$py_actual")" \
+  "python-ci.yml requests id-token: write (callers must grant it)"
+assert_eq "true" "$(jq -r '.inputs[]|select(.name=="python-versions")|.required' <<<"$py_actual")" \
+  "python-versions stays required (a default would move every repo's Python version into repo-template)"
 
 finish

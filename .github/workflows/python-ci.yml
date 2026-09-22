@@ -145,8 +145,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       # BEFORE `pip install -e ".[dev]"`: the Bandit scan needs no installed package, so it runs
-      # BEFORE any PR code or dependency install hook executes, and its result can't be influenced by
-      # that code.
+      # BEFORE any PR code or dependency install hook executes, and the SCAN sees the tree as
+      # committed. That protects the scan, not the verdict: the verdict step runs after PR code in
+      # this same job, and that code can rewrite the staged gate script or GITHUB_ENV. Open item 19.
       # FIRST LEG ONLY (D4). An app has one leg; a library gains nothing by running pattern SAST over the
       # same source once per interpreter. The SAME expression appears on the next step and on the
       # verdict's BANDIT_EXPECTED, and test_python_ci.sh asserts all three are identical.

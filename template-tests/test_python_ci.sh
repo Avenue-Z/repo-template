@@ -130,7 +130,7 @@ assert_nomatch "bandit never runs the workspace copy of the gate" '(^|[^-])scrip
 assert_match "the tier comes from the repo ROOT's policy file, whatever the working directory" \
   '\$\{GITHUB_WORKSPACE\}/\.github/sca-policy\.json' "$bandit_code"
 
-echo "python-ci: bandit runs before pip install -e (no installed package, no PR code, can influence it)"
+echo "python-ci: bandit runs before pip install -e (the scan precedes PR code; the verdict does not, Open item 19)"
 # Found by id (the bandit step) and by run content (the install step has no id/name), never by a
 # fixed index — steps around them can be added or removed without this test moving.
 bandit_idx="$(fr '.bandit_idx_by_id // "missing"')"

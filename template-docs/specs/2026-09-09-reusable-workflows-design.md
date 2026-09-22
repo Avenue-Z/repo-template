@@ -1362,6 +1362,19 @@ Recorded as open, not as decided:
     Identity grant must NEVER trust a `python-ci.yml` `job_workflow_ref` (or a bare repository id)
     for anything that writes.
 
+    **The Bandit verdict is inside that blast radius too.** Running Bandit before `pip install -e`
+    protects the *scan*, not the *verdict*: the verdict step runs after the check command in the same
+    job, and executes `$RUNNER_TEMP/trusted-scripts/ci-aggregate-gate.sh`, which earlier PR code can
+    overwrite (`GITHUB_ENV` and `GITHUB_PATH` also reach it). Demonstrated in the PR 84 review: a
+    `tests/conftest.py` that rewrites the staged script as `exit 0` turned a real B602 HIGH/HIGH into
+    a green verdict. **Accepted, not fixed.** A caller can already set `run-bandit: false` in its own
+    `ci.yml`, so Bandit was never enforceable against a deliberate author, and moving the verdict to
+    a job with no PR code costs a billed job without closing that. The realistic exposure is a
+    compromised dependency, which has worse options than silencing Bandit. **Phase G PR 2 inherits
+    this:** the template's own `ci` job today reaches its Bandit verdict without executing PR code;
+    once the template becomes a `python-ci.yml` caller, generated repos lose that property. Accepted
+    on the same grounds.
+
 ---
 
 ## Rejected

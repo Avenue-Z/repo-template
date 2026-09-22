@@ -1051,6 +1051,11 @@ by someone who is no longer looking at that change. It is defensible for a small
 the integration branch and the full matrix still runs there. It is not free, and presenting it as free
 is how a team ends up surprised by the first 3.11 break and blames the wrong change.
 
+(Superseded by §6 decision 2: for an app there is no full matrix anywhere, on `dev` or otherwise, so
+the recovery this paragraph describes does not exist for apps — the coverage reduction is total, not
+deferred to `dev`. The reasoning stands as the trade-off argued here before that decision, and as the
+trade-off a library — which still gets the matrix — does not incur.)
+
 ### A trap to name and reject
 
 **`paths-ignore` for docs-only pushes.** It genuinely cuts jobs on Free, and it is the obvious next

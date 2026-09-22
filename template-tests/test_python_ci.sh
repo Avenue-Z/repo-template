@@ -128,6 +128,22 @@ assert_nomatch "bandit never runs the workspace copy of the gate" '(^|[^-])scrip
 assert_match "the tier comes from the repo ROOT's policy file, whatever the working directory" \
   '\$\{GITHUB_WORKSPACE\}/\.github/sca-policy\.json' "$bandit_code"
 
+echo "python-ci: the check step actually runs CHECK_COMMAND"
+# Nothing above executes the check step's body — the continue-on-error assertion and the env-wiring
+# assertion both pass even if `eval "${CHECK_COMMAND}"` were replaced with `true`. Drive the real
+# step, the same way the verdict step is driven below.
+CHECK_SCRIPT="$(mktemp)"
+fr '.check.run // ""' > "$CHECK_SCRIPT"
+check_rc() { # <check-command>
+  local rc=0
+  CHECK_COMMAND="$1" bash "$CHECK_SCRIPT" >/dev/null 2>&1 || rc=$?
+  echo "$rc"
+}
+assert_eq 0 "$(check_rc true)" "CHECK_COMMAND=true -> the check step exits 0"
+assert_eq 0 "$(check_rc 'test 1 -eq 1')" "a command with args (test 1 -eq 1) -> exits 0"
+assert_eq 3 "$(check_rc 'exit 3')" "CHECK_COMMAND='exit 3' -> the check step propagates the real exit code"
+rm -f "$CHECK_SCRIPT"
+
 echo "python-ci: the dead context field is not read anywhere"
 assert_nomatch "no step reads github.job_workflow_ref (that context is ALWAYS empty)" \
   'github\.job_workflow_ref' "$(python3 -c 'import yaml,sys; print(yaml.safe_dump(yaml.safe_load(open(sys.argv[1]))))' "$WORKFLOW")"

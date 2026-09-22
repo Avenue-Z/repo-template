@@ -1038,6 +1038,9 @@ For `client-satisfaction-report` (5 jobs × 112 runs over the 8-day sample):
 | Fold `bandit` into the `ci` aggregate job as a step | 112 min |
 | **Combined (5 jobs → 2)** | **336 of 563 (60%) ≈ 1,260/month** |
 
+(Superseded in part by §6 decision 2: apps run no matrix at all, on PRs or anywhere else, so the
+"full matrix on push to `dev`" half of the first row no longer exists.)
+
 `data-warehouse` (7 jobs × 71 runs): the same two changes plus folding `typecheck` (26s) into `test`,
 ≈ 284 of 567. **`dbt-parse` stays** — at 74s it is real work with its own failure mode, and merging it
 would trade a diagnosable check for one billed minute.
@@ -1068,10 +1071,15 @@ The input surface is small, because variation is only the three axes of establis
 
 ```yaml
 with:
-  python-versions: '["3.11","3.12","3.13"]'
-  check-command: make check      # lets the 3 laggards migrate on their own clock
-  run-bandit: true               # covers az-* and noble-clone until they catch up
+  python-versions: '["3.11"]'  # REQUIRED. An app: the one version its Dockerfile deploys on.
+                               # A library: every version it supports.
+  check-command: make check    # lets the 3 laggards migrate on their own clock
+  run-bandit: true             # covers az-* and noble-clone until they catch up
 ```
+
+`python-versions` has no default on purpose (decision 2 below): the version belongs next to the
+Dockerfile that fixes it, not in `repo-template`, where bumping a shared default would be a clause-3
+break for every caller at once.
 
 Two of the three axes become inputs. **The third disappears for free, and it is the sleeper win:**
 pinned action SHAs live inside the reusable workflow, so Dependabot's `checkout` / `setup-python` bumps
@@ -1160,15 +1168,15 @@ was right when written. It no longer holds:
    `repo-template`; one tag ruleset can target both, with the same `avenue-z-v1-tag-advance` app as its
    bypass; and the advance workflow can be parameterised rather than duplicated. The tag's name is the
    G plan's to choose (e.g. `python-ci-v1`). The `@v1` in this section's examples is a placeholder.
-2. **The matrix trade-off in §5 — decided 2026-09-15: one Python version on PRs is accepted.** The cost
-   stands as §5 states it: a break on an older version is caught after the PR, by someone no longer
-   looking at that change. **Where the full matrix runs is still open.** §5 put it on pushes to `dev`,
-   but new repos no longer push-trigger on `dev` — their triggers are `pull_request` + `push: [main]`
-   (`repo-template#73`) — while the existing repos still push-trigger on all three branches. The
-   candidates are promotion PRs (base `staging` or `main`), which catch the break before it is
-   promoted, or pushes to `main`, which catch it only once it has shipped. `on:` cannot propagate (§2),
-   so `python-ci.yml` would have to choose from the event and base it is called with, not from triggers
-   it declares.
+2. **The matrix — revised 2026-09-22: one version, the deployed one; no matrix for apps.** An
+   earlier version of this item accepted one version on PRs and left open where the full matrix
+   would run. The question dissolved on inspection: an app ships one image and runs exactly one
+   Python (the template's is `python:3.11-slim`), so the other matrix legs tested versions that
+   never run in production. The caller now lists the version its Dockerfile deploys on, and
+   `test_python_ci.sh` asserts the two agree. A library installed by other repos (e.g.
+   `glean-chat-api-client`) lists every version it supports and gets the matrix. The cost: a repo
+   that bumps its Dockerfile's Python finds breakage on that PR rather than earlier — which, for an
+   app, is when it matters. Tag name, per decision 1: `python-ci-v1`, point tags `python-ci-v1.N.0`.
 3. **Does the contract record permissions? — decided 2026-09-15: yes, for both workflows.** Callers of
    `python-ci.yml` will need `id-token: write` too, if it stages scripts the way `checks.yml` does, and
    §1's clause 4 applies to it from its first tag. So its golden contract file is born recording the
@@ -1321,6 +1329,23 @@ Recorded as open, not as decided:
     that repo actually commits. Whether the gate should *fail* rather than pass when a repo declares
     dependencies but ships nothing scannable is **undecided** — it would be a new failure condition
     unrelated to the caller's code (§1 clause 3), so it cannot ride `v1` silently either way.
+16. **Both moving tags gate on ONE `template-tests` run's conclusion** (§4, §6 decision 1). `v1` and
+    `python-ci-v1` both advance off the same workflow's `push` result. A break in the Python
+    template's layer-2 self-call — an unpinned ruff/mypy release failing `make check` in
+    `templates/python`, say — stalls the `v1` advance too, including a security fix to `checks.yml`,
+    and it shows as the advance being SKIPPED (`workflow_run` conclusion `!= success`), not as a red
+    check anywhere. Mitigation options, named and not decided: pin the template's own dev tools; or
+    split the gate per tag. **Undecided.**
+17. **`advance-v1.yml`'s concurrency group is shared by both tags, with `cancel-in-progress: false`**
+    (§4). GitHub keeps at most ONE pending run per group, so a queued per-tag `workflow_dispatch`
+    acknowledgement can be SILENTLY replaced by a later run while another is still in progress — the
+    dispatcher sees their run accepted and never learns it did not execute. Whoever dispatches must
+    confirm their run actually ran, not merely that it was queued.
+18. **The tag ruleset exists only as live GitHub API state** (§1). `v1-tag-protection` (id
+    `22951344`; `python-ci-v1` is to be added to it in Phase G) is applied out of band, the same way
+    `apply-rulesets.sh` applies the branch ruleset. Nothing in the repo reproduces its JSON, so it
+    cannot be reviewed in a PR, diffed, or restored from source if it is ever deleted or
+    misconfigured — only re-created by hand against the API.
 
 ---
 

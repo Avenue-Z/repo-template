@@ -397,6 +397,7 @@ jobs:
   python-ci:
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: [python-ci]
     runs-on: ubuntu-latest'
 if [ "${CALLER_RC}" -ne 0 ]; then pass "refused (non-zero exit)"; else fail "should be refused, exited 0. Output: ${CALLER_OUT}"; fi
@@ -413,6 +414,7 @@ jobs:
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: [python-ci]
     runs-on: ubuntu-latest'
 assert_match "a granted python-ci caller requires 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -431,6 +433,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
+    if: always()
     needs: [test]
     runs-on: ubuntu-latest'
 assert_match "a ci.yml with no python-ci caller still requires 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -451,6 +454,7 @@ jobs:
   python-ci:  # the reusable Python CI
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: [python-ci]
     runs-on: ubuntu-latest'
 if [ "${CALLER_RC}" -ne 0 ]; then pass "unreadable header: refused (non-zero exit)"; else fail "unreadable header: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
@@ -469,6 +473,7 @@ jobs:
   python-ci-lib:
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: [python-ci, python-ci-lib]
     runs-on: ubuntu-latest'
 if [ "${CALLER_RC}" -ne 0 ]; then pass "second caller ungranted: refused (non-zero exit)"; else fail "second caller ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
@@ -535,6 +540,7 @@ jobs:
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: python-ci
     runs-on: ubuntu-latest'
 assert_match "needs as a scalar: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -549,6 +555,7 @@ jobs:
   lint-sql:
     runs-on: ubuntu-latest
   ci:  # the aggregate
+    if: always()
     needs:
       - lint-sql
       # the reusable Python CI
@@ -568,6 +575,7 @@ jobs:
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: [
       python-ci]
     runs-on: ubuntu-latest'
@@ -581,6 +589,7 @@ ci_caller_run 'name: ci
 on: pull_request
 jobs:
   ci:
+    if: always()
     permissions:
       contents: read
       id-token: write
@@ -598,6 +607,7 @@ jobs:
   python-ci:
     uses: ./.github/workflows/python-ci.yml
   ci:
+    if: always()
     needs: [python-ci]
     runs-on: ubuntu-latest'
 if [ "${CALLER_RC}" -ne 0 ]; then pass "local call ungranted: refused (non-zero exit)"; else fail "local call ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
@@ -614,6 +624,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
+    if: always()
     name: CI verdict
     needs: [test]
     runs-on: ubuntu-latest'
@@ -626,6 +637,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
+    if: always()
     needs: [test]
     strategy:
       matrix:
@@ -644,6 +656,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
+    if: always()
     name: CI
     needs: [
       test]
@@ -660,6 +673,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
+    if: always()
     name: ${n}
     needs: [test]
     runs-on: ubuntu-latest"
@@ -678,6 +692,7 @@ jobs:
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs:
     - python-ci
     runs-on: ubuntu-latest'
@@ -697,6 +712,7 @@ jobs:
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
+    if: always()
     needs: [python-ci]
     uses: Avenue-Z/repo-template/.github/workflows/verdict.yml@v1' "$1"
 }
@@ -709,5 +725,42 @@ assert_nomatch "ci calls verdict.yml: never gets as far as requiring 'ci'" 'requ
 ci_caller_run "$(ci_calls_fixture '    strategy:
       fail-fast: false')"
 assert_match   "ci calls verdict.yml, then strategy: the refusal still names the call" "'ci / <called-job>'" "${CALLER_OUT}"
+
+# A SKIPPED REQUIRED CHECK PASSES. Measured (docs/notes/2026-09-23-phase-g-lab-proof-2.md, Part A): a
+# required `ci` job skipped because a need failed reads as satisfied and the PR is MERGEABLE, and so
+# does one skipped by its own `if:`. So the `ci` job must never be skippable: with `needs:` it must be
+# `if: always()`, and any other `if:` is refused. Breaks if a needs-bearing `ci` without the guard is
+# accepted — a FALSE GREEN on every PR whose tests fail.
+ci_if_fixture() { # <the ci job's if: line, or empty> <its needs: line, or empty>
+  printf '%s\n' 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:' "$2" "$1" '    runs-on: ubuntu-latest' | sed '/^$/d'
+}
+echo "apply-rulesets: a 'ci' job that can be skipped is refused"
+for case in "no if, with needs@    needs: [test]@" \
+            "if: !cancelled(), with needs@    needs: [test]@    if: \${{ !cancelled() }}" \
+            "if: success() || failure(), with needs@    needs: [test]@    if: success() || failure()" \
+            "an event if:, no needs@@    if: github.event_name == 'pull_request'"; do
+  IFS='@' read -r what needs cond <<<"${case}"
+  ci_caller_run "$(ci_if_fixture "${cond}" "${needs}")"
+  if [ "${CALLER_RC}" -ne 0 ]; then pass "${what}: refused (non-zero exit)"; else fail "${what}: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+  assert_match   "${what}: the refusal says a skip passes" 'skipped required check PASSES' "${CALLER_OUT}"
+  assert_nomatch "${what}: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+done
+
+# Breaks if the guard over-refuses: every spelling of always() is accepted, and a `ci` job with no
+# needs and no if: (the node and next templates' shape) cannot be skipped, so it needs nothing.
+echo "apply-rulesets: a 'ci' job that cannot be skipped is accepted"
+for case in "if: always()@    needs: [test]@    if: always()" \
+            "if: \${{ always() }}@    needs: [test]@    if: \${{ always() }}  # load-bearing" \
+            "if: \"always()\"@    needs: [test]@    if: \"always()\"" \
+            "no needs, no if@@"; do
+  IFS='@' read -r what needs cond <<<"${case}"
+  ci_caller_run "$(ci_if_fixture "${cond}" "${needs}")"
+  assert_match "${what}: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+done
 
 finish

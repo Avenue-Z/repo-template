@@ -195,8 +195,11 @@ fi
 # workflow, so it reports as 'ci / <called-job>'. Exit 4: the job reports under another context,
 # because of a `name:` other than ci, or a `strategy:` (matrix legs report as 'ci (1)', 'ci (2)').
 # Exit 3: a needs spelling it cannot read (a flow list over several lines, say), refused rather than
-# read as "needs nothing" or "needs everything". 5 and 4 are checked before 3 because 3 is only fatal
-# for a python-ci caller. 5 is its own flag, not a value of `shape`, so a later `strategy:` cannot
+# read as "needs nothing" or "needs everything". Exit 6: the job can be SKIPPED — it has `needs:` but no
+# `if: always()`, or it has any other `if:`. A skipped required check PASSES: the PR is mergeable
+# (measured, docs/notes/2026-09-23-phase-g-lab-proof-2.md, Part A), so a skippable `ci` is a FALSE
+# GREEN on every PR whose tests fail. A `ci` with no needs and no `if:` (node, next) cannot be skipped.
+# 5, 4 and 6 are checked before 3 because 3 is only fatal for a python-ci caller. 5 is its own flag, not a value of `shape`, so a later `strategy:` cannot
 # overwrite it and blame the wrong line.
 ci_job_needs() { # <workflow-file>
   awk '
@@ -209,7 +212,9 @@ ci_job_needs() { # <workflow-file>
     /^    name:/ && $0 !~ /^    name:[ ]*("ci"|\047ci\047|ci)[ ]*(#.*)?$/ { shape = 1 }
     /^    strategy:/ { shape = 1 }
     /^    uses:/ { calls = 1 }
+    /^    if:/ { if ($0 ~ /^    if:[ ]*(always[(][)]|"always[(][)]"|\047always[(][)]\047|[$][{][{][ ]*always[(][)][ ]*[}][}])[ ]*(#.*)?$/) always = 1; else skippable = 1 }
     /^    needs:/ {
+      hasneeds = 1
       v = $0; sub(/^    needs:[ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v)
       if (v == "") inlist = 1
       else if (v ~ /^[A-Za-z0-9_-]+$/) print v
@@ -219,7 +224,7 @@ ci_job_needs() { # <workflow-file>
       }
       else bad = 1
     }
-    END { if (!found) exit 2; if (calls) exit 5; if (shape) exit 4; if (bad) exit 3 }
+    END { if (!found) exit 2; if (calls) exit 5; if (shape) exit 4; if (skippable || (hasneeds && !always)) exit 6; if (bad) exit 3 }
   ' "$1"
 }
 if [ -f .github/workflows/ci.yml ]; then
@@ -232,6 +237,10 @@ if [ -f .github/workflows/ci.yml ]; then
        Refusing to require 'ci': a called job reports as 'ci / <called-job>', so nothing reports plain
        'ci' and every PR would hang PENDING FOREVER. Move the call to its own job and add that job to
        the 'ci' job's needs, the way init-repo.sh does for python-ci."
+  [ "${ci_needs_rc}" -ne 6 ] || die ".github/workflows/ci.yml has a 'ci' job that can be SKIPPED: it has needs: but no 'if: always()', or
+       some other if:. A skipped required check PASSES — the PR is mergeable — so every PR whose tests
+       fail would merge green. Refusing to require 'ci'. Give the 'ci' job exactly 'if: always()' and
+       let its verdict step fail when a needed job did not succeed, the way init-repo.sh does."
   [ "${ci_needs_rc}" -ne 4 ] || die ".github/workflows/ci.yml has a 'ci' job with a name: override or a strategy: (matrix) block,
        so it reports under another context name ('<name>', or 'ci (<leg>)'). Refusing to require 'ci':
        nothing would report it, and every PR would hang PENDING FOREVER. Remove the name: (or set it

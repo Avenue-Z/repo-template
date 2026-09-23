@@ -54,7 +54,10 @@ jobs:
   # on every Python bump. This job owns the stable name and does nothing else.
   #
   # `if: always()` is load-bearing: without it this job is SKIPPED when python-ci fails, and a skipped
-  # required check never reports. Add any per-repo job (e.g. dbt-parse) to `needs:` and it is gated
+  # required check PASSES. The PR is mergeable with failing tests (measured: Avenue-Z/repo-template
+  # docs/notes/2026-09-23-phase-g-lab-proof-2.md). With it, the verdict below runs and goes red. Never
+  # give this job any other `if:`: a skip by any route is a pass. scripts/apply-rulesets.sh refuses a
+  # `ci` job that can be skipped. Add any per-repo job (e.g. dbt-parse) to `needs:` and it is gated
   # automatically: the verdict requires EVERY needed job to be exactly `success`.
   ci:
     needs: [python-ci]

@@ -252,7 +252,7 @@ dockerfile_ver="$(sed -nE 's/^FROM python:([0-9]+\.[0-9]+).*/\1/p' templates/pyt
 assert_eq "[\"${dockerfile_ver}\"]" "$(jq -c '.versions|fromjson' <<<"$caller")" \
   "python-versions is exactly the Dockerfile's version (${dockerfile_ver}), as a quoted string"
 assert_eq '["python-ci"]' "$(jq -c .ci_needs <<<"$caller")" "ci needs python-ci"
-assert_eq "always()" "$(jq -r .ci_if <<<"$caller")" "ci runs always() (a skipped required check never reports)"
+assert_eq "always()" "$(jq -r .ci_if <<<"$caller")" "ci runs always() (a skipped required check PASSES, so ci must never be skippable)"
 assert_eq "false" "$(jq -r .ci_uses_actions <<<"$caller")" "ci uses no action (nothing to pin, nothing to bump)"
 
 echo "python caller: the ci aggregate, driven"

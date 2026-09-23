@@ -1095,8 +1095,9 @@ Per-repo extras still work — a workflow may freely mix `uses:` jobs with ordin
 
 ```yaml
 jobs:
-  standard:                       # the LIBRARY shape: every version it supports. An app lists just
-                                   # the one version its Dockerfile deploys on.
+  # the LIBRARY shape: every version it supports. An app lists just
+  # the one version its Dockerfile deploys on.
+  standard:
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
     permissions:
       contents: read
@@ -1107,6 +1108,9 @@ jobs:
     steps: [...]
   ci:
     needs: [standard, dbt-parse]
+    if: always()                  # a SKIPPED required check PASSES; apply-rulesets.sh refuses a skippable ci
+    runs-on: ubuntu-latest
+    steps: [...]                  # the verdict: fail unless every needs.*.result is success
 ```
 
 Two consequences worth stating explicitly:

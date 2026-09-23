@@ -179,18 +179,67 @@ fi
 # comment on the caller's header hands the check to the job above it, and if THAT job holds the grant,
 # `ci` is required on a caller that will startup_failure. `?` and not an empty line, because `$(...)`
 # strips trailing newlines and an empty last entry would silently vanish.
+#
+# The pattern has no `@`: a same-repo call (`uses: ./.github/workflows/python-ci.yml`) carries no ref
+# and still needs the grant, because python-ci.yml only skips the OIDC lookup inside repo-template.
+#
+# THE GRANT IS NOT ENOUGH. 'ci' is the required context, so a job named `ci` has to exist, and it has
+# to `needs:` every caller. Without the job, nothing reports 'ci' and every PR hangs PENDING FOREVER.
+# Without the needs, `ci` goes green while python-ci is red and the PR merges: a FALSE GREEN.
+#
+# ci_job_needs prints the `ci` job's needs, one per line, from the three block-style spellings:
+# `needs: x`, `needs: [x, y]` and a `- x` list at 6 spaces. Exit 2: no `ci` job under `jobs:`.
+# Exit 3: a needs spelling it cannot read (a flow list over several lines, say), refused rather than
+# read as "needs nothing" or "needs everything".
+ci_job_needs() { # <workflow-file>
+  awk '
+    /^[ ]*#/ || /^[ ]*$/ { next }
+    /^[^ ]/ { injobs = ($0 ~ /^jobs:[ ]*(#.*)?$/); inci = 0; next }
+    injobs && /^  [^ ]/ { inci = ($0 ~ /^  ci:[ ]*(#.*)?$/); if (inci) found = 1; inlist = 0; next }
+    !inci { next }
+    inlist && /^      - / { v = $0; sub(/^      - [ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v); print v; next }
+    inlist { inlist = 0 }
+    /^    needs:/ {
+      v = $0; sub(/^    needs:[ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v)
+      if (v == "") inlist = 1
+      else if (v ~ /^[A-Za-z0-9_-]+$/) print v
+      else if (v ~ /^\[[^]]*\]$/) {
+        n = split(substr(v, 2, length(v) - 2), a, ",")
+        for (i = 1; i <= n; i++) { gsub(/^[ ]+|[ ]+$/, "", a[i]); if (a[i] != "") print a[i] }
+      }
+      else bad = 1
+    }
+    END { if (!found) exit 2; if (bad) exit 3 }
+  ' "$1"
+}
 if [ -f .github/workflows/ci.yml ]; then
+  ci_needs_rc=0
+  ci_needs="$(ci_job_needs .github/workflows/ci.yml)" || ci_needs_rc=$?
+  [ "${ci_needs_rc}" -ne 2 ] || die ".github/workflows/ci.yml has no job named 'ci' (a '  ci:' header under 'jobs:').
+       Refusing to require the 'ci' context: nothing would ever report it, and every PR would hang
+       PENDING FOREVER."
   py_callers="$(awk '
     /^[ ]*#/ || /^[ ]*$/ { next }
     /^  [^ ]/ { j = ($0 ~ /^  [A-Za-z0-9_-]+:$/) ? substr($1, 1, length($1)-1) : "?" }
-    /^[^#]*uses:.*\/python-ci\.yml@/ { print ((/^    uses:/ && j != "") ? j : "?") }
+    /^[^#]*uses:.*\/python-ci\.yml/ { print ((/^    uses:/ && j != "") ? j : "?") }
   ' .github/workflows/ci.yml)"
   if [ -n "${py_callers}" ]; then
+    [ "${ci_needs_rc}" -eq 0 ] || die ".github/workflows/ci.yml calls python-ci.yml, but this script cannot read the 'ci' job's needs.
+       It reads 'needs: x', 'needs: [x, y]' on one line, or a '- x' list at 6-space indent. Refusing to
+       require 'ci' rather than guess whether it sees the python-ci result: if it does not, python-ci
+       goes red, 'ci' goes green, and the PR merges. Write it the way init-repo.sh does and re-run."
     while IFS= read -r py_caller; do
       [ "${py_caller}" != "?" ] || die ".github/workflows/ci.yml calls python-ci.yml, but not from a job this script can read
        (a bare '  <job>:' header at 2-space indent, with 'uses:' at 4). Refusing to require 'ci' rather
        than guess which job has to grant id-token: write — a wrong guess hangs every PR PENDING FOREVER.
        Write the caller the way init-repo.sh does and re-run."
+      [ "${py_caller}" != ci ] || die ".github/workflows/ci.yml calls python-ci.yml from the 'ci' job itself.
+       Refusing to require 'ci': a called job reports as 'ci / test (<version>)', so nothing reports
+       plain 'ci' and every PR would hang PENDING FOREVER. Move the call to its own job and add that
+       job to the 'ci' job's needs, the way init-repo.sh does."
+      grep -qxF -- "${py_caller}" <<<"${ci_needs}" || die ".github/workflows/ci.yml calls python-ci.yml from job '${py_caller}', but the 'ci' job does not need it
+       (needs as read: $(tr '\n' ' ' <<<"${ci_needs:-<none>}")). Refusing to require 'ci': it would go green
+       while '${py_caller}' is red, and the PR would merge. Add '${py_caller}' to the 'ci' job's needs and re-run."
       job_grants_id_token .github/workflows/ci.yml "${py_caller}" || die ".github/workflows/ci.yml calls python-ci.yml from job '${py_caller}', which is not granted id-token: write.
        Refusing to require 'ci'. Without the grant the run is a startup_failure with ZERO jobs, so
        'ci' never reports and every PR would hang PENDING FOREVER. Add this to the '${py_caller}' job

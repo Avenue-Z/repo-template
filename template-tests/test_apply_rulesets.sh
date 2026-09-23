@@ -604,4 +604,84 @@ if [ "${CALLER_RC}" -ne 0 ]; then pass "local call ungranted: refused (non-zero 
 assert_match   "local call ungranted: the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
 assert_nomatch "local call ungranted: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
 
+# Breaks if only the job ID is checked. GitHub names a job's context after its `name:`, and after its
+# matrix legs ('ci (1)', 'ci (2)'), so in both cases nothing reports plain 'ci' and every PR hangs
+# PENDING FOREVER. Refused for ANY ci.yml, caller or not: the reason has nothing to do with python-ci.
+echo "apply-rulesets: a 'ci' job that reports under another name is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    name: CI verdict
+    needs: [test]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "name override: refused (non-zero exit)"; else fail "name override: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "name override: the refusal says why" 'another context' "${CALLER_OUT}"
+assert_nomatch "name override: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    needs: [test]
+    strategy:
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "matrix: refused (non-zero exit)"; else fail "matrix: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "matrix: the refusal says why" 'another context' "${CALLER_OUT}"
+assert_nomatch "matrix: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if the unreadable-needs exit is checked before the shape exit: unreadable needs is only fatal
+# when ci.yml calls python-ci, so a non-caller with BOTH would slip through with the name override.
+echo "apply-rulesets: a name override is refused even when the needs are also unreadable"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    name: CI
+    needs: [
+      test]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "name override + unreadable needs: refused (non-zero exit)"; else fail "name override + unreadable needs: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_nomatch "name override + unreadable needs: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if every `name:` is refused. `name: ci` reports as 'ci', so refusing it fails a correct repo.
+echo "apply-rulesets: a 'ci' job named ci is accepted"
+for n in 'ci' "'ci'" '"ci"  # the required context'; do
+  ci_caller_run "name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    name: ${n}
+    needs: [test]
+    runs-on: ubuntu-latest"
+  assert_match "name: ${n}: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+done
+
+# Breaks if a needs list is only read with its dashes indented past the key. A dash at the key's own
+# indent is valid YAML; reading it as empty would tell the author to add a job the list already has.
+echo "apply-rulesets: a needs list with dashes at the key's indent is read"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs:
+    - python-ci
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -eq 0 ]; then pass "4-space dash list: accepted (exit 0)"; else fail "4-space dash list: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
+assert_match "4-space dash list: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
 finish

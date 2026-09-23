@@ -40,6 +40,13 @@ jobs:
       # THE VERSION THIS REPO DEPLOYS ON — the one in its Dockerfile's FROM line, as a quoted string.
       # Bump both together. A library installed by other repos lists every version it supports.
       python-versions: '["3.11"]'
+      # The rest of python-ci.yml's inputs, spelled out because a caller that passes none of them
+      # leaves no trace that they exist. Defaults shown; uncomment to change.
+      #
+      # check-command: make check   # the correctness gate
+      # run-bandit: true            # Bandit SAST. It scans `src` and nothing else, and a scan that
+      #                             # covers 0 lines is REFUSED, not passed ("bandit scanned 0 lines
+      #                             # of code"). Set false if this repo's Python does not live in src/.
 
   # WHY THIS JOB EXISTS. The required context is literally `ci` (scripts/apply-rulesets.sh). A called
   # job reports as `python-ci / test (3.11)` — the version is IN the name, so requiring it would break

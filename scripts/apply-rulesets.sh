@@ -182,23 +182,29 @@ fi
 #
 # The pattern has no `@`: a same-repo call (`uses: ./.github/workflows/python-ci.yml`) carries no ref
 # and still needs the grant, because python-ci.yml only skips the OIDC lookup inside repo-template.
+# That means repo-template's OWN self-call, if it ever gets a ci.yml, is refused too. Grant id-token:
+# write on that job anyway: it is harmless there, and it is one line against a special case here.
 #
 # THE GRANT IS NOT ENOUGH. 'ci' is the required context, so a job named `ci` has to exist, and it has
 # to `needs:` every caller. Without the job, nothing reports 'ci' and every PR hangs PENDING FOREVER.
 # Without the needs, `ci` goes green while python-ci is red and the PR merges: a FALSE GREEN.
 #
 # ci_job_needs prints the `ci` job's needs, one per line, from the three block-style spellings:
-# `needs: x`, `needs: [x, y]` and a `- x` list at 6 spaces. Exit 2: no `ci` job under `jobs:`.
-# Exit 3: a needs spelling it cannot read (a flow list over several lines, say), refused rather than
-# read as "needs nothing" or "needs everything".
+# `needs: x`, `needs: [x, y]` and a `- x` list (dashes at 6 spaces or at the key's own 4).
+# Exit 2: no `ci` job under `jobs:`. Exit 4: the job reports under another context, because of a
+# `name:` other than ci, or a `strategy:` (matrix legs report as 'ci (1)', 'ci (2)'). Exit 3: a needs
+# spelling it cannot read (a flow list over several lines, say), refused rather than read as "needs
+# nothing" or "needs everything". 4 is checked before 3 because 3 is only fatal for a python-ci caller.
 ci_job_needs() { # <workflow-file>
   awk '
     /^[ ]*#/ || /^[ ]*$/ { next }
     /^[^ ]/ { injobs = ($0 ~ /^jobs:[ ]*(#.*)?$/); inci = 0; next }
     injobs && /^  [^ ]/ { inci = ($0 ~ /^  ci:[ ]*(#.*)?$/); if (inci) found = 1; inlist = 0; next }
     !inci { next }
-    inlist && /^      - / { v = $0; sub(/^      - [ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v); print v; next }
+    inlist && /^(      |    )- / { v = $0; sub(/^ *- [ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v); print v; next }
     inlist { inlist = 0 }
+    /^    name:/ && $0 !~ /^    name:[ ]*("ci"|\047ci\047|ci)[ ]*(#.*)?$/ { shape = 1 }
+    /^    strategy:/ { shape = 1 }
     /^    needs:/ {
       v = $0; sub(/^    needs:[ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v)
       if (v == "") inlist = 1
@@ -209,7 +215,7 @@ ci_job_needs() { # <workflow-file>
       }
       else bad = 1
     }
-    END { if (!found) exit 2; if (bad) exit 3 }
+    END { if (!found) exit 2; if (shape) exit 4; if (bad) exit 3 }
   ' "$1"
 }
 if [ -f .github/workflows/ci.yml ]; then
@@ -218,6 +224,10 @@ if [ -f .github/workflows/ci.yml ]; then
   [ "${ci_needs_rc}" -ne 2 ] || die ".github/workflows/ci.yml has no job named 'ci' (a '  ci:' header under 'jobs:').
        Refusing to require the 'ci' context: nothing would ever report it, and every PR would hang
        PENDING FOREVER."
+  [ "${ci_needs_rc}" -ne 4 ] || die ".github/workflows/ci.yml has a 'ci' job with a name: override or a strategy: (matrix) block,
+       so it reports under another context name ('<name>', or 'ci (<leg>)'). Refusing to require 'ci':
+       nothing would report it, and every PR would hang PENDING FOREVER. Remove the name: (or set it
+       to ci) and move any matrix into a job that 'ci' needs."
   py_callers="$(awk '
     /^[ ]*#/ || /^[ ]*$/ { next }
     /^  [^ ]/ { j = ($0 ~ /^  [A-Za-z0-9_-]+:$/) ? substr($1, 1, length($1)-1) : "?" }

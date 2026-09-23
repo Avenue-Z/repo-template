@@ -99,8 +99,8 @@ brc="$(gate_rc "$TMP/high_high.json" "$TMP/internal.json")"; assert_eq 0 "$brc" 
 bres="$([ "$brc" -eq 0 ] && echo success || echo failure)"
 assert_eq 0 "$(ci_gate_rc "test:success" "bandit:$bres")" "internal high/high leaves the 'ci' check GREEN"
 
-echo "ci.yml wiring: the python ci job actually gates on bandit's result"
-PYCI=templates/python/.github/workflows/ci.yml
+echo "python-ci.yml wiring: the gate actually decides on bandit's result"
+PYCI=.github/workflows/python-ci.yml
 pyci="$(cat "$PYCI")"
 # Bandit is a STEP of the `ci` aggregate job now, not a sibling job. It ran for ~8 seconds and
 # billed a full rounded-up minute on every run; the aggregate job has to exist anyway to own the
@@ -122,6 +122,11 @@ assert_nomatch "python ci.yml no longer declares a separate 'bandit:' job" '^[[:
 # in ci.yml explaining that the aggregate `needs: [test]` so bandit no longer runs in parallel
 # trips it. A test that forbids documenting the change it is testing is a broken test.
 assert_nomatch "python ci job no longer 'needs' a bandit job"  '^[[:space:]]*needs:.*bandit'  "$pyci"
+# The caller must NOT run Bandit itself: that would be the workspace copy of the gate, which a PR can
+# rewrite. Bandit runs inside python-ci.yml, on the staged script.
+caller_txt="$(cat templates/python/.github/workflows/ci.yml)"
+assert_nomatch "the python caller runs no bandit of its own" 'bandit' "$(python3 -c 'import yaml,sys; print(yaml.safe_dump(yaml.safe_load(open(sys.argv[1]))))' templates/python/.github/workflows/ci.yml)"
+assert_match   "the python caller still declares a 'ci:' job (context reports)" '^[[:space:]]*ci:[[:space:]]*$' "$caller_txt"
 
 echo "no-hang property (d): node and next carry NO bandit job, but their ci context still reports"
 for stack in node next; do

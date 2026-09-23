@@ -131,18 +131,19 @@ job_has_uses() { # <workflow-file> -- true if the 'checks' job's own key is 'use
 # PR PENDING FOREVER (measured: avenue-z-ci-lab/adopter-private run 34709355618). init-repo.sh writes
 # the grant for new repos; this catches a caller written by hand during migration.
 #
-# What counts is the `checks` job's EFFECTIVE grant: its own `permissions` block REPLACES the
+# What counts is the caller job's EFFECTIVE grant — `checks` in checks.yml, the python-ci caller in
+# ci.yml: its own `permissions` block REPLACES the
 # workflow-level one, which applies only when the job has none. Comments are skipped, so prose that
 # mentions the grant cannot satisfy this. Like job_has_uses it reads block-style YAML at 2-space
 # indent, which is what init-repo.sh writes; any other spelling (flow style, write-all, quoting) is
 # refused — a loud local error, never a false pass.
-checks_job_grants_id_token() { # <workflow-file>
-  awk '
+job_grants_id_token() { # <workflow-file> <job>
+  awk -v job="$2" '
     /^[ ]*#/ || /^[ ]*$/ { next }
     /^permissions:/ { wf=1; next }
     wf && /^[^ ]/ { wf=0 }
     wf && /^  id-token:[ ]*write[ ]*(#.*)?$/ { wfgrant=1 }
-    /^  checks:$/ { injob=1; next }
+    $0 == "  " job ":" { injob=1; next }
     injob && (/^[^ ]/ || /^  [^ ]/) { injob=0; jp=0 }
     injob && /^    permissions:/ { jobblock=1; jp=1; next }
     jp && /^    [^ ]/ { jp=0 }
@@ -155,7 +156,7 @@ if [ ! -f .github/workflows/checks.yml ]; then
 elif grep -qE '^ *workflow_call:' .github/workflows/checks.yml; then
   add_context 'checks'          .github/workflows/checks.yml "this checks.yml IS the reusable workflow"
 elif job_has_uses .github/workflows/checks.yml; then
-  checks_job_grants_id_token .github/workflows/checks.yml || die ".github/workflows/checks.yml is a caller, but its 'checks' job is not granted id-token: write.
+  job_grants_id_token .github/workflows/checks.yml checks || die ".github/workflows/checks.yml is a caller, but its 'checks' job is not granted id-token: write.
        Refusing to require 'checks / checks'. The reusable checks.yml requests that permission, and a
        caller that does not grant it gets a startup_failure with ZERO jobs: the context never reports,
        so every PR would hang PENDING FOREVER. Add this to the 'checks' job (a job-level block
@@ -167,6 +168,102 @@ elif job_has_uses .github/workflows/checks.yml; then
   add_context 'checks / checks' .github/workflows/checks.yml "this checks.yml is a caller; a called job reports '<caller>/<called>'"
 else
   add_context 'checks'          .github/workflows/checks.yml "this checks.yml is a self-contained copy (the migration rollback path); it reports 'checks' directly"
+fi
+# A ci.yml that CALLS python-ci.yml is held to the same rule as a checks.yml caller: python-ci.yml
+# requests id-token: write, and a caller job that does not grant it is a startup_failure, so `ci`
+# never reports and requiring it hangs every PR PENDING FOREVER.
+#
+# EVERY call site is checked, and each must sit under a job header this script can READ — a bare
+# `  <job>:` with `uses:` at 4 spaces, which is what init-repo.sh writes. Anything else prints `?` and
+# is refused. Crediting the call to "the last header that did parse" is the false pass: a trailing
+# comment on the caller's header hands the check to the job above it, and if THAT job holds the grant,
+# `ci` is required on a caller that will startup_failure. `?` and not an empty line, because `$(...)`
+# strips trailing newlines and an empty last entry would silently vanish.
+#
+# The pattern has no `@`: a same-repo call (`uses: ./.github/workflows/python-ci.yml`) carries no ref
+# and still needs the grant, because python-ci.yml only skips the OIDC lookup inside repo-template.
+# That means repo-template's OWN self-call, if it ever gets a ci.yml, is refused too. Grant id-token:
+# write on that job anyway: it is harmless there, and it is one line against a special case here.
+#
+# THE GRANT IS NOT ENOUGH. 'ci' is the required context, so a job named `ci` has to exist, and it has
+# to `needs:` every caller. Without the job, nothing reports 'ci' and every PR hangs PENDING FOREVER.
+# Without the needs, `ci` goes green while python-ci is red and the PR merges: a FALSE GREEN.
+#
+# ci_job_needs prints the `ci` job's needs, one per line, from the three block-style spellings:
+# `needs: x`, `needs: [x, y]` and a `- x` list (dashes at 6 spaces or at the key's own 4).
+# Exit 2: no `ci` job under `jobs:`. Exit 5: the job is itself a caller (`uses:`) of ANY reusable
+# workflow, so it reports as 'ci / <called-job>'. Exit 4: the job reports under another context,
+# because of a `name:` other than ci, or a `strategy:` (matrix legs report as 'ci (1)', 'ci (2)').
+# Exit 3: a needs spelling it cannot read (a flow list over several lines, say), refused rather than
+# read as "needs nothing" or "needs everything". 5 and 4 are checked before 3 because 3 is only fatal
+# for a python-ci caller. 5 is its own flag, not a value of `shape`, so a later `strategy:` cannot
+# overwrite it and blame the wrong line.
+ci_job_needs() { # <workflow-file>
+  awk '
+    /^[ ]*#/ || /^[ ]*$/ { next }
+    /^[^ ]/ { injobs = ($0 ~ /^jobs:[ ]*(#.*)?$/); inci = 0; next }
+    injobs && /^  [^ ]/ { inci = ($0 ~ /^  ci:[ ]*(#.*)?$/); if (inci) found = 1; inlist = 0; next }
+    !inci { next }
+    inlist && /^(      |    )- / { v = $0; sub(/^ *- [ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v); print v; next }
+    inlist { inlist = 0 }
+    /^    name:/ && $0 !~ /^    name:[ ]*("ci"|\047ci\047|ci)[ ]*(#.*)?$/ { shape = 1 }
+    /^    strategy:/ { shape = 1 }
+    /^    uses:/ { calls = 1 }
+    /^    needs:/ {
+      v = $0; sub(/^    needs:[ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v)
+      if (v == "") inlist = 1
+      else if (v ~ /^[A-Za-z0-9_-]+$/) print v
+      else if (v ~ /^\[[^]]*\]$/) {
+        n = split(substr(v, 2, length(v) - 2), a, ",")
+        for (i = 1; i <= n; i++) { gsub(/^[ ]+|[ ]+$/, "", a[i]); if (a[i] != "") print a[i] }
+      }
+      else bad = 1
+    }
+    END { if (!found) exit 2; if (calls) exit 5; if (shape) exit 4; if (bad) exit 3 }
+  ' "$1"
+}
+if [ -f .github/workflows/ci.yml ]; then
+  ci_needs_rc=0
+  ci_needs="$(ci_job_needs .github/workflows/ci.yml)" || ci_needs_rc=$?
+  [ "${ci_needs_rc}" -ne 2 ] || die ".github/workflows/ci.yml has no job named 'ci' (a '  ci:' header under 'jobs:').
+       Refusing to require the 'ci' context: nothing would ever report it, and every PR would hang
+       PENDING FOREVER."
+  [ "${ci_needs_rc}" -ne 5 ] || die ".github/workflows/ci.yml has a 'ci' job that is itself a caller of a reusable workflow ('uses:').
+       Refusing to require 'ci': a called job reports as 'ci / <called-job>', so nothing reports plain
+       'ci' and every PR would hang PENDING FOREVER. Move the call to its own job and add that job to
+       the 'ci' job's needs, the way init-repo.sh does for python-ci."
+  [ "${ci_needs_rc}" -ne 4 ] || die ".github/workflows/ci.yml has a 'ci' job with a name: override or a strategy: (matrix) block,
+       so it reports under another context name ('<name>', or 'ci (<leg>)'). Refusing to require 'ci':
+       nothing would report it, and every PR would hang PENDING FOREVER. Remove the name: (or set it
+       to ci) and move any matrix into a job that 'ci' needs."
+  py_callers="$(awk '
+    /^[ ]*#/ || /^[ ]*$/ { next }
+    /^  [^ ]/ { j = ($0 ~ /^  [A-Za-z0-9_-]+:$/) ? substr($1, 1, length($1)-1) : "?" }
+    /^[^#]*uses:.*\/python-ci\.yml/ { print ((/^    uses:/ && j != "") ? j : "?") }
+  ' .github/workflows/ci.yml)"
+  if [ -n "${py_callers}" ]; then
+    [ "${ci_needs_rc}" -eq 0 ] || die ".github/workflows/ci.yml calls python-ci.yml, but this script cannot read the 'ci' job's needs.
+       It reads 'needs: x', 'needs: [x, y]' on one line, or a '- x' list at 6-space indent. Refusing to
+       require 'ci' rather than guess whether it sees the python-ci result: if it does not, python-ci
+       goes red, 'ci' goes green, and the PR merges. Write it the way init-repo.sh does and re-run."
+    while IFS= read -r py_caller; do
+      [ "${py_caller}" != "?" ] || die ".github/workflows/ci.yml calls python-ci.yml, but not from a job this script can read
+       (a bare '  <job>:' header at 2-space indent, with 'uses:' at 4). Refusing to require 'ci' rather
+       than guess which job has to grant id-token: write — a wrong guess hangs every PR PENDING FOREVER.
+       Write the caller the way init-repo.sh does and re-run."
+      grep -qxF -- "${py_caller}" <<<"${ci_needs}" || die ".github/workflows/ci.yml calls python-ci.yml from job '${py_caller}', but the 'ci' job does not need it
+       (needs as read: $(tr '\n' ' ' <<<"${ci_needs:-<none>}")). Refusing to require 'ci': it would go green
+       while '${py_caller}' is red, and the PR would merge. Add '${py_caller}' to the 'ci' job's needs and re-run."
+      job_grants_id_token .github/workflows/ci.yml "${py_caller}" || die ".github/workflows/ci.yml calls python-ci.yml from job '${py_caller}', which is not granted id-token: write.
+       Refusing to require 'ci'. Without the grant the run is a startup_failure with ZERO jobs, so
+       'ci' never reports and every PR would hang PENDING FOREVER. Add this to the '${py_caller}' job
+       (a job-level block REPLACES the workflow-level one) and re-run:
+
+           permissions:
+             contents: read
+             id-token: write"
+    done <<<"${py_callers}"
+  fi
 fi
 add_context ci             .github/workflows/ci.yml             "a required check with no workflow hangs every PR pending forever"
 add_context template-tests .github/workflows/template-tests.yml "this workflow is the template's own, and init-repo.sh removes it"

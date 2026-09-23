@@ -364,4 +364,350 @@ jobs:
 if [ "${CALLER_RC}" -eq 0 ]; then pass "workflow-level grant: accepted (exit 0)"; else fail "workflow-level grant: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
 assert_match "workflow-level grant: requires 'checks / checks'" 'required: checks / checks' "${CALLER_OUT}"
 
+# ---------------------------------------------------------------------------------------
+# THE SAME REFUSAL FOR ci.yml. python-ci.yml requests id-token: write, so a ci.yml whose python-ci
+# caller job does not grant it is a startup_failure: `ci` never reports, and requiring it hangs every
+# PR PENDING FOREVER (lab-observed in Phase G, Task 6 Step 5). init-repo.sh ships the grant; this is
+# the guard for callers written by hand during migration.
+GRANTED_CHECKS='name: checks
+on: pull_request
+jobs:
+  checks:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1'
+ci_caller_run() { # <ci.yml content> -- sets CALLER_RC and CALLER_OUT
+  local fx
+  fx="$(mktemp -d)"
+  mkdir -p "${fx}/scripts" "${fx}/.github/rulesets" "${fx}/.github/workflows"
+  cp scripts/apply-rulesets.sh "${fx}/scripts/apply-rulesets.sh"
+  cp .github/rulesets/repo-ruleset.json "${fx}/.github/rulesets/repo-ruleset.json"
+  printf '%s\n' "${GRANTED_CHECKS}" > "${fx}/.github/workflows/checks.yml"
+  printf '%s\n' "$1" > "${fx}/.github/workflows/ci.yml"
+  CALLER_RC=0
+  CALLER_OUT="$(cd "${fx}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1)" || CALLER_RC=$?
+  rm -rf "${fx}"
+}
+
+echo "apply-rulesets: a python-ci caller that grants nothing is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "refused (non-zero exit)"; else fail "should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
+assert_nomatch "it never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+echo "apply-rulesets: a python-ci caller that grants it requires 'ci'"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+assert_match "a granted python-ci caller requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# The caller init-repo.sh actually ships, not a fixture shaped like it: comments between the header and
+# its permissions, and a `with:` block. A false REFUSAL here fails apply-rulesets on every new Python repo.
+echo "apply-rulesets: the Python template's own ci.yml is accepted and requires 'ci'"
+ci_caller_run "$(cat templates/python/.github/workflows/ci.yml)"
+if [ "${CALLER_RC}" -eq 0 ]; then pass "shipped caller: accepted (exit 0)"; else fail "shipped caller: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
+assert_match "shipped caller: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+echo "apply-rulesets: a self-contained ci.yml (no python-ci caller) is unaffected"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    needs: [test]
+    runs-on: ubuntu-latest'
+assert_match "a ci.yml with no python-ci caller still requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if the caller job is found by "the last 2-space key before the uses: line". The header's
+# trailing comment is valid YAML, but a reader matching only a bare `  name:` skips it and credits the
+# call to `other` — which DOES hold the grant, so the wrong job passes and `ci` is required on a caller
+# that will startup_failure. A header this script cannot read must be refused, never guessed.
+echo "apply-rulesets: a python-ci caller whose job header it cannot read is refused, not credited to another job"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  other:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+  python-ci:  # the reusable Python CI
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "unreadable header: refused (non-zero exit)"; else fail "unreadable header: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_nomatch "unreadable header: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if only the FIRST caller is checked: the second one here has no grant.
+echo "apply-rulesets: every python-ci caller job is checked, not just the first"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  python-ci-lib:
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci, python-ci-lib]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "second caller ungranted: refused (non-zero exit)"; else fail "second caller ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "second caller ungranted: the refusal names that job" "'python-ci-lib'" "${CALLER_OUT}"
+assert_nomatch "second caller ungranted: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if 'ci' is required on file existence alone. The caller is granted, so the id-token guard
+# passes, but no job reports 'ci': requiring it hangs every PR PENDING FOREVER.
+echo "apply-rulesets: a ci.yml with no job named 'ci' is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "no ci job: refused (non-zero exit)"; else fail "no ci job: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "no ci job: the refusal says so" "no job named 'ci'" "${CALLER_OUT}"
+assert_nomatch "no ci job: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if a `ci:` key anywhere counts. This one is under `env:`, not `jobs:`.
+echo "apply-rulesets: a 'ci:' key outside jobs: is not a ci job"
+ci_caller_run 'name: ci
+on: pull_request
+env:
+  ci: "true"
+jobs:
+  test:
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "ci key under env: refused (non-zero exit)"; else fail "ci key under env: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_nomatch "ci key under env: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if the caller is only checked for the grant and not for reaching the aggregate. Here `ci`
+# needs only lint-sql, so python-ci can go red while `ci` goes green and the PR merges: a FALSE GREEN.
+echo "apply-rulesets: a python-ci caller that the 'ci' job does not need is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  lint-sql:
+    runs-on: ubuntu-latest
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [lint-sql]
+    if: always()
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "caller not needed: refused (non-zero exit)"; else fail "caller not needed: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "caller not needed: the refusal names the caller" "'python-ci'" "${CALLER_OUT}"
+assert_nomatch "caller not needed: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if only the `[a, b]` flow form of needs is read. The scalar and block-list forms are valid
+# and must be accepted; a false refusal fails apply-rulesets on a correct repo.
+echo "apply-rulesets: the scalar and block-list forms of needs are read"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: python-ci
+    runs-on: ubuntu-latest'
+assert_match "needs as a scalar: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  lint-sql:
+    runs-on: ubuntu-latest
+  ci:  # the aggregate
+    needs:
+      - lint-sql
+      # the reusable Python CI
+      - python-ci  # must stay in this list
+    runs-on: ubuntu-latest'
+assert_match "needs as a block list: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if a needs spelling this script cannot read is taken as "needs nothing" and the caller is
+# then reported missing, or worse, taken as "needs everything". It must be refused as unreadable.
+echo "apply-rulesets: a needs list this script cannot read is refused as unreadable"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [
+      python-ci]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "unreadable needs: refused (non-zero exit)"; else fail "unreadable needs: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "unreadable needs: the refusal says it could not read it" 'cannot read' "${CALLER_OUT}"
+assert_nomatch "unreadable needs: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if the caller IS the `ci` job. It then reports 'ci / test (3.11)', and 'ci' never reports.
+echo "apply-rulesets: a 'ci' job that is itself the python-ci caller is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "ci is the caller: refused (non-zero exit)"; else fail "ci is the caller: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "ci is the caller: the refusal explains the reported name" 'ci / ' "${CALLER_OUT}"
+assert_nomatch "ci is the caller: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if a call site is only recognised with an `@ref`. A same-repo call has none, and still needs
+# the grant everywhere but repo-template itself.
+echo "apply-rulesets: a local python-ci call (no @ref) is still held to the grant"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    uses: ./.github/workflows/python-ci.yml
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "local call ungranted: refused (non-zero exit)"; else fail "local call ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "local call ungranted: the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
+assert_nomatch "local call ungranted: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if only the job ID is checked. GitHub names a job's context after its `name:`, and after its
+# matrix legs ('ci (1)', 'ci (2)'), so in both cases nothing reports plain 'ci' and every PR hangs
+# PENDING FOREVER. Refused for ANY ci.yml, caller or not: the reason has nothing to do with python-ci.
+echo "apply-rulesets: a 'ci' job that reports under another name is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    name: CI verdict
+    needs: [test]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "name override: refused (non-zero exit)"; else fail "name override: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "name override: the refusal says why" 'another context' "${CALLER_OUT}"
+assert_nomatch "name override: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    needs: [test]
+    strategy:
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "matrix: refused (non-zero exit)"; else fail "matrix: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "matrix: the refusal says why" 'another context' "${CALLER_OUT}"
+assert_nomatch "matrix: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if the unreadable-needs exit is checked before the shape exit: unreadable needs is only fatal
+# when ci.yml calls python-ci, so a non-caller with BOTH would slip through with the name override.
+echo "apply-rulesets: a name override is refused even when the needs are also unreadable"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    name: CI
+    needs: [
+      test]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "name override + unreadable needs: refused (non-zero exit)"; else fail "name override + unreadable needs: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_nomatch "name override + unreadable needs: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if every `name:` is refused. `name: ci` reports as 'ci', so refusing it fails a correct repo.
+echo "apply-rulesets: a 'ci' job named ci is accepted"
+for n in 'ci' "'ci'" '"ci"  # the required context'; do
+  ci_caller_run "name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    name: ${n}
+    needs: [test]
+    runs-on: ubuntu-latest"
+  assert_match "name: ${n}: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+done
+
+# Breaks if a needs list is only read with its dashes indented past the key. A dash at the key's own
+# indent is valid YAML; reading it as empty would tell the author to add a job the list already has.
+echo "apply-rulesets: a needs list with dashes at the key's indent is read"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs:
+    - python-ci
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -eq 0 ]; then pass "4-space dash list: accepted (exit 0)"; else fail "4-space dash list: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
+assert_match "4-space dash list: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if only a python-ci call on the `ci` job is refused. A `ci` job that calls ANY reusable
+# workflow reports as 'ci / <called-job>', so nothing reports plain 'ci' and every PR hangs PENDING
+# FOREVER.
+ci_calls_fixture() { # <extra line under the ci job, or empty>
+  printf '%s\n' 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    uses: Avenue-Z/repo-template/.github/workflows/verdict.yml@v1' "$1"
+}
+echo "apply-rulesets: a 'ci' job that calls any reusable workflow is refused"
+ci_caller_run "$(ci_calls_fixture '')"
+if [ "${CALLER_RC}" -ne 0 ]; then pass "ci calls verdict.yml: refused (non-zero exit)"; else fail "ci calls verdict.yml: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "ci calls verdict.yml: the refusal explains the reported name" "'ci / <called-job>'" "${CALLER_OUT}"
+assert_nomatch "ci calls verdict.yml: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+# Breaks if a later `strategy:` overwrites the call: the refusal must still name the real cause.
+ci_caller_run "$(ci_calls_fixture '    strategy:
+      fail-fast: false')"
+assert_match   "ci calls verdict.yml, then strategy: the refusal still names the call" "'ci / <called-job>'" "${CALLER_OUT}"
+
 finish

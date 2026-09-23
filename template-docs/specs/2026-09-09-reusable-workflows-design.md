@@ -625,7 +625,7 @@ Two consequences remain:
 |---|---|---|
 | **0** | — | **Billing restored.** Blocks B onward. Does not block G: `repo-template` is public, and G is proven in the lab |
 | **A** | `repo-template` | `template-tests` green; `v1` cut and tag-protected. **Done** 2026-09-11 — see `docs/notes/2026-09-11-phase-a-v1-cut.md` |
-| **G** | `repo-template` | `python-ci.yml` published as a reusable workflow with the §5 job-count reduction inside it, gated by its own §4 layers; a good and a deliberately bad PR observed on a Python adoption in the lab. **Moved ahead of B** — see §6 |
+| **G** | `repo-template` | `python-ci.yml` published as a reusable workflow with the §5 job-count reduction inside it, gated by its own §4 layers; a good and a deliberately bad PR observed on a Python adoption in the lab. **Moved ahead of B** — see §6. **Done** 2026-09-23 — python-ci-v1 cut at f6a1146; lab proof in docs/notes/2026-09-22-phase-g-lab-proof.md. |
 | **B** | `data-warehouse` (pilot) | **One migration PR carrying both callers**, `checks` and `ci`. A good PR goes green; a deliberately bad PR goes red **for the right reason**, on each gate; real per-job durations measured, including whether folded jobs stay under a billed minute; Avenue-Z's org Actions policy read |
 | **C** | `client-satisfaction-report` | Largest consumer; one PR carrying both callers, once B has answered the open questions |
 | **D** | `announcement-recapping`, `az-media-hits`, `az-utm-generator`, `dash-social-connection`, `rippling-asana-pto`, `sf-sb-automation` | Mechanical; one PR per repo carrying both callers |
@@ -1351,7 +1351,8 @@ Recorded as open, not as decided:
     dispatcher sees their run accepted and never learns it did not execute. Whoever dispatches must
     confirm their run actually ran, not merely that it was queued.
 18. **The tag ruleset exists only as live GitHub API state** (§1). `v1-tag-protection` (id
-    `22951344`; `python-ci-v1` is to be added to it in Phase G) is applied out of band, the same way
+    `22951344`; since 2026-09-23 it covers `v1`, `v1.*`, `python-ci-v1` and `python-ci-v1.*` — see
+    `docs/notes/2026-09-22-phase-g-lab-proof.md`) is applied out of band, the same way
     `apply-rulesets.sh` applies the branch ruleset. Nothing in the repo reproduces its JSON, so it
     cannot be reviewed in a PR, diffed, or restored from source if it is ever deleted or
     misconfigured — only re-created by hand against the API.

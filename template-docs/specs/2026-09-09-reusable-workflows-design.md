@@ -1095,8 +1095,9 @@ Per-repo extras still work — a workflow may freely mix `uses:` jobs with ordin
 
 ```yaml
 jobs:
-  standard:                       # the LIBRARY shape: every version it supports. An app lists just
-                                   # the one version its Dockerfile deploys on.
+  # the LIBRARY shape: every version it supports. An app lists just
+  # the one version its Dockerfile deploys on.
+  standard:
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
     permissions:
       contents: read

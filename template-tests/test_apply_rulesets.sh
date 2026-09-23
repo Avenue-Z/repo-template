@@ -364,4 +364,115 @@ jobs:
 if [ "${CALLER_RC}" -eq 0 ]; then pass "workflow-level grant: accepted (exit 0)"; else fail "workflow-level grant: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
 assert_match "workflow-level grant: requires 'checks / checks'" 'required: checks / checks' "${CALLER_OUT}"
 
+# ---------------------------------------------------------------------------------------
+# THE SAME REFUSAL FOR ci.yml. python-ci.yml requests id-token: write, so a ci.yml whose python-ci
+# caller job does not grant it is a startup_failure: `ci` never reports, and requiring it hangs every
+# PR PENDING FOREVER (lab-observed in Phase G, Task 6 Step 5). init-repo.sh ships the grant; this is
+# the guard for callers written by hand during migration.
+GRANTED_CHECKS='name: checks
+on: pull_request
+jobs:
+  checks:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1'
+ci_caller_run() { # <ci.yml content> -- sets CALLER_RC and CALLER_OUT
+  local fx
+  fx="$(mktemp -d)"
+  mkdir -p "${fx}/scripts" "${fx}/.github/rulesets" "${fx}/.github/workflows"
+  cp scripts/apply-rulesets.sh "${fx}/scripts/apply-rulesets.sh"
+  cp .github/rulesets/repo-ruleset.json "${fx}/.github/rulesets/repo-ruleset.json"
+  printf '%s\n' "${GRANTED_CHECKS}" > "${fx}/.github/workflows/checks.yml"
+  printf '%s\n' "$1" > "${fx}/.github/workflows/ci.yml"
+  CALLER_RC=0
+  CALLER_OUT="$(cd "${fx}" && PATH="${STUB}:${PATH}" ./scripts/apply-rulesets.sh --dry-run 2>&1)" || CALLER_RC=$?
+  rm -rf "${fx}"
+}
+
+echo "apply-rulesets: a python-ci caller that grants nothing is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "refused (non-zero exit)"; else fail "should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
+assert_nomatch "it never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+echo "apply-rulesets: a python-ci caller that grants it requires 'ci'"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+assert_match "a granted python-ci caller requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# The caller init-repo.sh actually ships, not a fixture shaped like it: comments between the header and
+# its permissions, and a `with:` block. A false REFUSAL here fails apply-rulesets on every new Python repo.
+echo "apply-rulesets: the Python template's own ci.yml is accepted and requires 'ci'"
+ci_caller_run "$(cat templates/python/.github/workflows/ci.yml)"
+if [ "${CALLER_RC}" -eq 0 ]; then pass "shipped caller: accepted (exit 0)"; else fail "shipped caller: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
+assert_match "shipped caller: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+echo "apply-rulesets: a self-contained ci.yml (no python-ci caller) is unaffected"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    needs: [test]
+    runs-on: ubuntu-latest'
+assert_match "a ci.yml with no python-ci caller still requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if the caller job is found by "the last 2-space key before the uses: line". The header's
+# trailing comment is valid YAML, but a reader matching only a bare `  name:` skips it and credits the
+# call to `other` — which DOES hold the grant, so the wrong job passes and `ci` is required on a caller
+# that will startup_failure. A header this script cannot read must be refused, never guessed.
+echo "apply-rulesets: a python-ci caller whose job header it cannot read is refused, not credited to another job"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  other:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+  python-ci:  # the reusable Python CI
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "unreadable header: refused (non-zero exit)"; else fail "unreadable header: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_nomatch "unreadable header: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
+# Breaks if only the FIRST caller is checked: the second one here has no grant.
+echo "apply-rulesets: every python-ci caller job is checked, not just the first"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  python-ci-lib:
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci, python-ci-lib]
+    runs-on: ubuntu-latest'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "second caller ungranted: refused (non-zero exit)"; else fail "second caller ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "second caller ungranted: the refusal names that job" "'python-ci-lib'" "${CALLER_OUT}"
+assert_nomatch "second caller ungranted: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
 finish

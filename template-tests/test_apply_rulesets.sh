@@ -684,4 +684,30 @@ jobs:
 if [ "${CALLER_RC}" -eq 0 ]; then pass "4-space dash list: accepted (exit 0)"; else fail "4-space dash list: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
 assert_match "4-space dash list: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 
+# Breaks if only a python-ci call on the `ci` job is refused. A `ci` job that calls ANY reusable
+# workflow reports as 'ci / <called-job>', so nothing reports plain 'ci' and every PR hangs PENDING
+# FOREVER.
+ci_calls_fixture() { # <extra line under the ci job, or empty>
+  printf '%s\n' 'name: ci
+on: pull_request
+jobs:
+  python-ci:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
+  ci:
+    needs: [python-ci]
+    uses: Avenue-Z/repo-template/.github/workflows/verdict.yml@v1' "$1"
+}
+echo "apply-rulesets: a 'ci' job that calls any reusable workflow is refused"
+ci_caller_run "$(ci_calls_fixture '')"
+if [ "${CALLER_RC}" -ne 0 ]; then pass "ci calls verdict.yml: refused (non-zero exit)"; else fail "ci calls verdict.yml: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "ci calls verdict.yml: the refusal explains the reported name" "'ci / <called-job>'" "${CALLER_OUT}"
+assert_nomatch "ci calls verdict.yml: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+# Breaks if a later `strategy:` overwrites the call: the refusal must still name the real cause.
+ci_caller_run "$(ci_calls_fixture '    strategy:
+      fail-fast: false')"
+assert_match   "ci calls verdict.yml, then strategy: the refusal still names the call" "'ci / <called-job>'" "${CALLER_OUT}"
+
 finish

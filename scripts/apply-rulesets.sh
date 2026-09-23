@@ -191,10 +191,13 @@ fi
 #
 # ci_job_needs prints the `ci` job's needs, one per line, from the three block-style spellings:
 # `needs: x`, `needs: [x, y]` and a `- x` list (dashes at 6 spaces or at the key's own 4).
-# Exit 2: no `ci` job under `jobs:`. Exit 4: the job reports under another context, because of a
-# `name:` other than ci, or a `strategy:` (matrix legs report as 'ci (1)', 'ci (2)'). Exit 3: a needs
-# spelling it cannot read (a flow list over several lines, say), refused rather than read as "needs
-# nothing" or "needs everything". 4 is checked before 3 because 3 is only fatal for a python-ci caller.
+# Exit 2: no `ci` job under `jobs:`. Exit 5: the job is itself a caller (`uses:`) of ANY reusable
+# workflow, so it reports as 'ci / <called-job>'. Exit 4: the job reports under another context,
+# because of a `name:` other than ci, or a `strategy:` (matrix legs report as 'ci (1)', 'ci (2)').
+# Exit 3: a needs spelling it cannot read (a flow list over several lines, say), refused rather than
+# read as "needs nothing" or "needs everything". 5 and 4 are checked before 3 because 3 is only fatal
+# for a python-ci caller. 5 is its own flag, not a value of `shape`, so a later `strategy:` cannot
+# overwrite it and blame the wrong line.
 ci_job_needs() { # <workflow-file>
   awk '
     /^[ ]*#/ || /^[ ]*$/ { next }
@@ -205,6 +208,7 @@ ci_job_needs() { # <workflow-file>
     inlist { inlist = 0 }
     /^    name:/ && $0 !~ /^    name:[ ]*("ci"|\047ci\047|ci)[ ]*(#.*)?$/ { shape = 1 }
     /^    strategy:/ { shape = 1 }
+    /^    uses:/ { calls = 1 }
     /^    needs:/ {
       v = $0; sub(/^    needs:[ ]*/, "", v); sub(/[ ]*(#.*)?$/, "", v)
       if (v == "") inlist = 1
@@ -215,7 +219,7 @@ ci_job_needs() { # <workflow-file>
       }
       else bad = 1
     }
-    END { if (!found) exit 2; if (shape) exit 4; if (bad) exit 3 }
+    END { if (!found) exit 2; if (calls) exit 5; if (shape) exit 4; if (bad) exit 3 }
   ' "$1"
 }
 if [ -f .github/workflows/ci.yml ]; then
@@ -224,6 +228,10 @@ if [ -f .github/workflows/ci.yml ]; then
   [ "${ci_needs_rc}" -ne 2 ] || die ".github/workflows/ci.yml has no job named 'ci' (a '  ci:' header under 'jobs:').
        Refusing to require the 'ci' context: nothing would ever report it, and every PR would hang
        PENDING FOREVER."
+  [ "${ci_needs_rc}" -ne 5 ] || die ".github/workflows/ci.yml has a 'ci' job that is itself a caller of a reusable workflow ('uses:').
+       Refusing to require 'ci': a called job reports as 'ci / <called-job>', so nothing reports plain
+       'ci' and every PR would hang PENDING FOREVER. Move the call to its own job and add that job to
+       the 'ci' job's needs, the way init-repo.sh does for python-ci."
   [ "${ci_needs_rc}" -ne 4 ] || die ".github/workflows/ci.yml has a 'ci' job with a name: override or a strategy: (matrix) block,
        so it reports under another context name ('<name>', or 'ci (<leg>)'). Refusing to require 'ci':
        nothing would report it, and every PR would hang PENDING FOREVER. Remove the name: (or set it
@@ -243,10 +251,6 @@ if [ -f .github/workflows/ci.yml ]; then
        (a bare '  <job>:' header at 2-space indent, with 'uses:' at 4). Refusing to require 'ci' rather
        than guess which job has to grant id-token: write — a wrong guess hangs every PR PENDING FOREVER.
        Write the caller the way init-repo.sh does and re-run."
-      [ "${py_caller}" != ci ] || die ".github/workflows/ci.yml calls python-ci.yml from the 'ci' job itself.
-       Refusing to require 'ci': a called job reports as 'ci / test (<version>)', so nothing reports
-       plain 'ci' and every PR would hang PENDING FOREVER. Move the call to its own job and add that
-       job to the 'ci' job's needs, the way init-repo.sh does."
       grep -qxF -- "${py_caller}" <<<"${ci_needs}" || die ".github/workflows/ci.yml calls python-ci.yml from job '${py_caller}', but the 'ci' job does not need it
        (needs as read: $(tr '\n' ' ' <<<"${ci_needs:-<none>}")). Refusing to require 'ci': it would go green
        while '${py_caller}' is red, and the PR would merge. Add '${py_caller}' to the 'ci' job's needs and re-run."

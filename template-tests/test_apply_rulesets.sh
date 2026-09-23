@@ -377,6 +377,12 @@ jobs:
       contents: read
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/checks.yml@v1'
+# A `ci` job with needs must read their results (exit 7). Fixtures testing something else end with this.
+# shellcheck disable=SC2016
+VERDICT='    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e "all(.[]; .result == \"success\")" <<<"${NEEDS}"'
 ci_caller_run() { # <ci.yml content> -- sets CALLER_RC and CALLER_OUT
   local fx
   fx="$(mktemp -d)"
@@ -399,7 +405,8 @@ jobs:
   ci:
     if: always()
     needs: [python-ci]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -ne 0 ]; then pass "refused (non-zero exit)"; else fail "should be refused, exited 0. Output: ${CALLER_OUT}"; fi
 assert_match   "the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
 assert_nomatch "it never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -416,7 +423,8 @@ jobs:
   ci:
     if: always()
     needs: [python-ci]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 assert_match "a granted python-ci caller requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 
 # The caller init-repo.sh actually ships, not a fixture shaped like it: comments between the header and
@@ -435,7 +443,8 @@ jobs:
   ci:
     if: always()
     needs: [test]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 assert_match "a ci.yml with no python-ci caller still requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 
 # Breaks if the caller job is found by "the last 2-space key before the uses: line". The header's
@@ -456,7 +465,8 @@ jobs:
   ci:
     if: always()
     needs: [python-ci]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -ne 0 ]; then pass "unreadable header: refused (non-zero exit)"; else fail "unreadable header: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
 assert_nomatch "unreadable header: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
 
@@ -475,7 +485,8 @@ jobs:
   ci:
     if: always()
     needs: [python-ci, python-ci-lib]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -ne 0 ]; then pass "second caller ungranted: refused (non-zero exit)"; else fail "second caller ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
 assert_match   "second caller ungranted: the refusal names that job" "'python-ci-lib'" "${CALLER_OUT}"
 assert_nomatch "second caller ungranted: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -523,7 +534,8 @@ jobs:
   ci:
     needs: [lint-sql]
     if: always()
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -ne 0 ]; then pass "caller not needed: refused (non-zero exit)"; else fail "caller not needed: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
 assert_match   "caller not needed: the refusal names the caller" "'python-ci'" "${CALLER_OUT}"
 assert_nomatch "caller not needed: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -542,7 +554,8 @@ jobs:
   ci:
     if: always()
     needs: python-ci
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 assert_match "needs as a scalar: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 ci_caller_run 'name: ci
 on: pull_request
@@ -560,7 +573,8 @@ jobs:
       - lint-sql
       # the reusable Python CI
       - python-ci  # must stay in this list
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 assert_match "needs as a block list: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 
 # Breaks if a needs spelling this script cannot read is taken as "needs nothing" and the caller is
@@ -578,7 +592,8 @@ jobs:
     if: always()
     needs: [
       python-ci]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -ne 0 ]; then pass "unreadable needs: refused (non-zero exit)"; else fail "unreadable needs: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
 assert_match   "unreadable needs: the refusal says it could not read it" 'cannot read' "${CALLER_OUT}"
 assert_nomatch "unreadable needs: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -589,7 +604,6 @@ ci_caller_run 'name: ci
 on: pull_request
 jobs:
   ci:
-    if: always()
     permissions:
       contents: read
       id-token: write
@@ -609,7 +623,8 @@ jobs:
   ci:
     if: always()
     needs: [python-ci]
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -ne 0 ]; then pass "local call ungranted: refused (non-zero exit)"; else fail "local call ungranted: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
 assert_match   "local call ungranted: the refusal names the missing grant" 'id-token: write' "${CALLER_OUT}"
 assert_nomatch "local call ungranted: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
@@ -624,7 +639,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
-    if: always()
     name: CI verdict
     needs: [test]
     runs-on: ubuntu-latest'
@@ -637,7 +651,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
-    if: always()
     needs: [test]
     strategy:
       matrix:
@@ -656,7 +669,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
   ci:
-    if: always()
     name: CI
     needs: [
       test]
@@ -676,7 +688,8 @@ jobs:
     if: always()
     name: ${n}
     needs: [test]
-    runs-on: ubuntu-latest"
+    runs-on: ubuntu-latest
+${VERDICT}"
   assert_match "name: ${n}: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 done
 
@@ -695,7 +708,8 @@ jobs:
     if: always()
     needs:
     - python-ci
-    runs-on: ubuntu-latest'
+    runs-on: ubuntu-latest
+'"${VERDICT}"
 if [ "${CALLER_RC}" -eq 0 ]; then pass "4-space dash list: accepted (exit 0)"; else fail "4-space dash list: should be accepted, exited ${CALLER_RC}. Output: ${CALLER_OUT}"; fi
 assert_match "4-space dash list: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
 
@@ -712,7 +726,6 @@ jobs:
       id-token: write
     uses: Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1
   ci:
-    if: always()
     needs: [python-ci]
     uses: Avenue-Z/repo-template/.github/workflows/verdict.yml@v1' "$1"
 }
@@ -737,13 +750,16 @@ on: pull_request
 jobs:
   test:
     runs-on: ubuntu-latest
-  ci:' "$2" "$1" '    runs-on: ubuntu-latest' | sed '/^$/d'
+  ci:' "$2" "$1" '    runs-on: ubuntu-latest' "${2:+${VERDICT}}" | sed '/^$/d'
 }
 echo "apply-rulesets: a 'ci' job that can be skipped is refused"
 for case in "no if, with needs@    needs: [test]@" \
             "if: !cancelled(), with needs@    needs: [test]@    if: \${{ !cancelled() }}" \
             "if: success() || failure(), with needs@    needs: [test]@    if: success() || failure()" \
-            "an event if:, no needs@@    if: github.event_name == 'pull_request'"; do
+            "an event if:, no needs@@    if: github.event_name == 'pull_request'" \
+            "if: always() && an event, with needs@    needs: [test]@    if: always() && github.event_name == 'push'" \
+            "a quoted if key, no needs@@    \"if\": github.event_name == 'push'" \
+            "if with a space before the colon, no needs@@    if : github.event_name == 'push'"; do
   IFS='@' read -r what needs cond <<<"${case}"
   ci_caller_run "$(ci_if_fixture "${cond}" "${needs}")"
   if [ "${CALLER_RC}" -ne 0 ]; then pass "${what}: refused (non-zero exit)"; else fail "${what}: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
@@ -751,12 +767,51 @@ for case in "no if, with needs@    needs: [test]@" \
   assert_nomatch "${what}: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
 done
 
+# Breaks if an `if` this script cannot read is taken as absent. A job body at 6-space indent hides its
+# `if:` from a 4-space reader, and a `<<:` merge key can bring one in unseen.
+for case in "a job body at 6-space indent@  ci:
+      if: github.event_name == 'push'
+      runs-on: ubuntu-latest" \
+            "a merge key@  ci:
+    <<: *on-push
+    runs-on: ubuntu-latest"; do
+  what="${case%%@*}" job="${case#*@}"
+  ci_caller_run "name: ci
+on: pull_request
+x-on-push: &on-push
+  if: github.event_name == 'push'
+jobs:
+${job}"
+  if [ "${CALLER_RC}" -ne 0 ]; then pass "${what}: refused (non-zero exit)"; else fail "${what}: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+  assert_match   "${what}: the refusal says a skip passes" 'skipped required check PASSES' "${CALLER_OUT}"
+done
+
+# Breaks if `if: always()` alone is enough. A `ci` job with needs that never reads their results runs,
+# goes green while a needed job is red, and the PR merges: the same FALSE GREEN as a skip.
+echo "apply-rulesets: a 'ci' job with needs and no verdict is refused"
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok'
+if [ "${CALLER_RC}" -ne 0 ]; then pass "no verdict: refused (non-zero exit)"; else fail "no verdict: should be refused, exited 0. Output: ${CALLER_OUT}"; fi
+assert_match   "no verdict: the refusal says it never reads the results" 'never reads their results' "${CALLER_OUT}"
+assert_nomatch "no verdict: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
+
 # Breaks if the guard over-refuses: every spelling of always() is accepted, and a `ci` job with no
 # needs and no if: (the node and next templates' shape) cannot be skipped, so it needs nothing.
 echo "apply-rulesets: a 'ci' job that cannot be skipped is accepted"
 for case in "if: always()@    needs: [test]@    if: always()" \
             "if: \${{ always() }}@    needs: [test]@    if: \${{ always() }}  # load-bearing" \
             "if: \"always()\"@    needs: [test]@    if: \"always()\"" \
+            "if: 'always()'@    needs: [test]@    if: 'always()'" \
+            "if: \"\${{ always() }}\"@    needs: [test]@    if: \"\${{ always() }}\"" \
             "no needs, no if@@"; do
   IFS='@' read -r what needs cond <<<"${case}"
   ci_caller_run "$(ci_if_fixture "${cond}" "${needs}")"

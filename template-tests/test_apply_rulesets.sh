@@ -804,6 +804,22 @@ if [ "${CALLER_RC}" -ne 0 ]; then pass "no verdict: refused (non-zero exit)"; el
 assert_match   "no verdict: the refusal says it never reads the results" 'never reads their results' "${CALLER_OUT}"
 assert_nomatch "no verdict: never gets as far as requiring 'ci'" 'required: ci$' "${CALLER_OUT}"
 
+# The OTHER verdict spelling exit 7 accepts. Breaks if the needs.<job>.result alternative is
+# dropped from the regex: with only toJSON(needs) covered, that half of the guard has no test.
+# shellcheck disable=SC2016
+ci_caller_run 'name: ci
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+  ci:
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test.result }}" = success'
+assert_match "verdict via needs.<job>.result: requires 'ci'" 'required: ci$' "${CALLER_OUT}"
+
 # Breaks if the guard over-refuses: every spelling of always() is accepted, and a `ci` job with no
 # needs and no if: (the node and next templates' shape) cannot be skipped, so it needs nothing.
 echo "apply-rulesets: a 'ci' job that cannot be skipped is accepted"

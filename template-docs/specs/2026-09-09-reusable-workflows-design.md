@@ -1107,6 +1107,9 @@ jobs:
     steps: [...]
   ci:
     needs: [standard, dbt-parse]
+    if: always()                  # a SKIPPED required check PASSES; apply-rulesets.sh refuses a skippable ci
+    runs-on: ubuntu-latest
+    steps: [...]                  # the verdict: fail unless every needs.*.result is success
 ```
 
 Two consequences worth stating explicitly:

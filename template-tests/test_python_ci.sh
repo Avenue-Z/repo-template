@@ -214,4 +214,56 @@ assert_eq 0 "$(verdict_rc success skipped false)"  "bandit not expected in this 
 assert_eq 1 "$(verdict_rc skipped skipped false)"  "check skipped (the install died) -> red"
 assert_eq 1 "$(verdict_rc success success true "$(mktemp -d)")" "no staged verdict script -> red, never a fallback"
 
+# ---------------------------------------------------------------------------------------
+# THE PYTHON TEMPLATE'S ci.yml IS A CALLER. init-repo.sh copies it verbatim into every new Python
+# repo, so what it says here is what those repos run until someone edits them by hand.
+PYCALLER=templates/python/.github/workflows/ci.yml
+echo "python caller: shape"
+caller="$(python3 - "$PYCALLER" <<'PY'
+import json, sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+jobs = d.get('jobs') or {}
+pc, ci = jobs.get('python-ci') or {}, jobs.get('ci') or {}
+print(json.dumps({
+    "jobs": sorted(jobs),
+    "uses": pc.get('uses'),
+    "perms": pc.get('permissions'),
+    "secrets": pc.get('secrets'),
+    "versions": (pc.get('with') or {}).get('python-versions'),
+    "ci_needs": ci.get('needs'),
+    "ci_if": ci.get('if'),
+    "ci_uses_actions": any('uses' in s for s in (ci.get('steps') or [])),
+    "ci_run": next((s.get('run') for s in (ci.get('steps') or []) if s.get('name') == 'verdict'), ""),
+}))
+PY
+)"
+assert_eq '["ci","python-ci"]' "$(jq -c .jobs <<<"$caller")" "the caller has exactly two jobs: python-ci and ci"
+assert_eq "Avenue-Z/repo-template/.github/workflows/python-ci.yml@python-ci-v1" "$(jq -r .uses <<<"$caller")" \
+  "python-ci calls the reusable workflow at the moving python-ci-v1 tag"
+# Same silent failure as checks.yml's caller: without the grant the run is a startup_failure, the
+# `ci` context never reports, and a PR where it is required hangs PENDING FOREVER.
+assert_eq '{"contents":"read","id-token":"write"}' "$(jq -c .perms <<<"$caller")" \
+  "the python-ci job grants contents: read + id-token: write"
+# python-ci.yml needs no secrets, and it is reached at a MOVING tag in a public repo: `secrets: inherit`
+# here would hand every secret of every generated repo to code that changes with no PR in that repo.
+assert_eq "null" "$(jq -c .secrets <<<"$caller")" "the python-ci job passes no secrets (no secrets: inherit)"
+# D1: the version lives here, and it must be the one the Dockerfile deploys on.
+dockerfile_ver="$(sed -nE 's/^FROM python:([0-9]+\.[0-9]+).*/\1/p' templates/python/Dockerfile | head -1)"
+assert_eq "[\"${dockerfile_ver}\"]" "$(jq -c '.versions|fromjson' <<<"$caller")" \
+  "python-versions is exactly the Dockerfile's version (${dockerfile_ver}), as a quoted string"
+assert_eq '["python-ci"]' "$(jq -c .ci_needs <<<"$caller")" "ci needs python-ci"
+assert_eq "always()" "$(jq -r .ci_if <<<"$caller")" "ci runs always() (a skipped required check PASSES, so ci must never be skippable)"
+assert_eq "false" "$(jq -r .ci_uses_actions <<<"$caller")" "ci uses no action (nothing to pin, nothing to bump)"
+
+echo "python caller: the ci aggregate, driven"
+CIRUN="$(mktemp)"; jq -r .ci_run <<<"$caller" > "$CIRUN"
+agg_rc() { local rc=0; NEEDS="$1" bash "$CIRUN" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
+assert_eq 0 "$(agg_rc '{"python-ci":{"result":"success","outputs":{}}}')" "python-ci success -> ci green"
+assert_eq 1 "$(agg_rc '{"python-ci":{"result":"failure","outputs":{}}}')" "python-ci failure -> ci red"
+assert_eq 1 "$(agg_rc '{"python-ci":{"result":"cancelled","outputs":{}}}')" "python-ci cancelled -> ci red"
+assert_eq 1 "$(agg_rc '{"python-ci":{"result":"success","outputs":{}},"dbt-parse":{"result":"skipped","outputs":{}}}')" \
+  "a per-repo extra that skipped -> ci red"
+assert_eq 1 "$(agg_rc '{}')" "no needs at all -> ci red (an aggregate over nothing proves nothing)"
+rm -f "$CIRUN"
+
 finish

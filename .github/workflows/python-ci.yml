@@ -51,6 +51,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # GitHub's default is 360 minutes, billed for as long as a hung job runs, in every Python repo at
+    # once. Measured: 17-25s in the lab; the heaviest fleet test job took 65s. 15 is headroom, not a
+    # target. A caller cannot raise it: `timeout-minutes` is not allowed on a `uses:` job.
+    timeout-minutes: 15
     strategy:
       # A library wants to see EVERY broken version, not only the first one to fail.
       fail-fast: false
@@ -87,8 +91,9 @@ jobs:
 
           # The request token is a credential: it goes in a header and is NEVER echoed. Only the
           # resolved claim is printed. `|| true` defers a transport failure by one line, to the check
-          # that can actually explain it.
-          jwt="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r '.value // empty')" || true
+          # that can actually explain it. BOUNDED: unbounded, a stalled endpoint holds the job to
+          # GitHub's 360-minute default. A timeout is a transport failure like any other.
+          jwt="$(curl -sS --connect-timeout 10 --max-time 30 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r '.value // empty')" || true
           [ -n "${jwt}" ] || {
             echo "::error::the OIDC token endpoint returned no token — refusing to stage gate scripts from an unknown ref"
             exit 1

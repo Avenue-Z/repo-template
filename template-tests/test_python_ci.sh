@@ -266,4 +266,35 @@ assert_eq 1 "$(agg_rc '{"python-ci":{"result":"success","outputs":{}},"dbt-parse
 assert_eq 1 "$(agg_rc '{}')" "no needs at all -> ci red (an aggregate over nothing proves nothing)"
 rm -f "$CIRUN"
 
+# #91. EVERY JOB IS BOUNDED. GitHub's default is 360 minutes, billed for as long as the job runs,
+# and python-ci.yml is reached at a moving tag by every Python repo: one hang is up to 360 billed
+# minutes per run, per repo, in an org that has already run out of Actions minutes once. Asserted per
+# job, so the next job added to either file is caught too.
+echo "python-ci and its caller: every job is bounded"
+job_timeouts() { # <workflow> -> one "<job> <uses|runs> <timeout-minutes, or ->" line per job
+  python3 - "$1" <<'PY'
+import sys, yaml
+for name, j in (yaml.safe_load(open(sys.argv[1])).get('jobs') or {}).items():
+    print(name, 'uses' if 'uses' in j else 'runs', j.get('timeout-minutes', '-'))
+PY
+}
+assert_bounded() { # <workflow>
+  local job kind t n=0
+  while read -r job kind t; do
+    n=$((n + 1))
+    if [ "$kind" = uses ]; then
+      # GitHub REJECTS timeout-minutes on a job that calls a reusable workflow (actionlint: "not
+      # available"), and the caller becomes a startup_failure. Its bound lives in the called job.
+      assert_eq "-" "$t" "$1: '$job' calls a reusable workflow, so it carries no timeout-minutes"
+    elif [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -ge 1 ] && [ "$t" -le 60 ]; then
+      pass "$1: '$job' sets timeout-minutes: $t"
+    else
+      fail "$1: '$job' must set timeout-minutes between 1 and 60 (got '$t'; GitHub's default is 360)"
+    fi
+  done < <(job_timeouts "$1")
+  assert_ok "$1: at least one job was checked" [ "$n" -gt 0 ]
+}
+assert_bounded "$WORKFLOW"
+assert_bounded "$PYCALLER"
+
 finish

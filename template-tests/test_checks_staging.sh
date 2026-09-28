@@ -130,6 +130,34 @@ echo "checks staging: the request token is never printed"
 assert_nomatch "no OIDC request token in the step's output" 's3cr3t-request-token' "$(cat "${RT}/log")"
 assert_nomatch "no raw JWT in the step's output" 'eyJhbGciOiJSUzI1NiJ9' "$(cat "${RT}/log")"
 
+# #91. A STALLED TOKEN ENDPOINT MUST NOT HOLD THE JOB. Unbounded, curl waits for the job's own
+# timeout, and GitHub's default is 360 billed minutes. Asserted on the argv of the curl the step
+# ACTUALLY EXECUTES (a PATH shim records it, then execs the real curl), so a flag in a comment or on
+# some other command cannot satisfy it. A timeout needs no test of its own: curl exits non-zero,
+# which is the unreachable-endpoint path below — `|| true`, no token, REFUSED.
+echo "checks staging: the token fetch is bounded"
+REAL_CURL="$(command -v curl)"
+mkdir -p "${RT}/bin"
+cat > "${RT}/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "${RT}/curl.argv"
+exec "${REAL_CURL}" "\$@"
+EOF
+chmod +x "${RT}/bin/curl"
+stub_token "$happy"
+PATH="${RT}/bin:${PATH}" GITHUB_REPOSITORY=acme/app resolve "a valid claim still resolves through the bounded fetch" 0
+# The argv holds the (fake) request token in its Authorization header. It stays in ${RT}, which the
+# trap deletes, and the no-token-in-output assertions above still read only the step's own output.
+curl_opt() { awk -v o="$1" 'p { print; exit } $0 == o { p = 1 }' "${RT}/curl.argv" 2>/dev/null || true; }
+connect="$(curl_opt --connect-timeout)"
+total="$(curl_opt --max-time)"
+assert_match "curl gets --connect-timeout <seconds> (got '${connect}')" '^[1-9][0-9]*$' "$connect"
+assert_match "curl gets --max-time <seconds> (got '${total}')" '^[1-9][0-9]*$' "$total"
+if [[ "$connect" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]]; then
+  assert_ok "--connect-timeout (${connect}s) is within --max-time (${total}s)" [ "$connect" -le "$total" ]
+  assert_ok "--max-time (${total}s) is at most a minute" [ "$total" -le 60 ]
+fi
+
 echo "checks staging: an absent or empty claim refuses"
 stub_token '{"workflow_ref":"acme/app/.github/workflows/checks.yml@refs/heads/main"}'
 GITHUB_REPOSITORY=acme/app resolve "claim absent -> REFUSED" 1

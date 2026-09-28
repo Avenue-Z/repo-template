@@ -63,6 +63,9 @@ jobs:
     needs: [python-ci]
     if: always()
     runs-on: ubuntu-latest
+    # One jq call. The python-ci job above carries its own bound, inside python-ci.yml, because a
+    # `uses:` job cannot set timeout-minutes.
+    timeout-minutes: 5
     steps:
       - name: verdict
         env:

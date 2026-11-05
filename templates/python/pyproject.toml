@@ -7,6 +7,8 @@ name = "app"
 version = "0.1.0"
 description = "TODO"
 requires-python = ">=3.11"
+# glean-chat-api-client, drive-api-client: pin with ==, from the Avenue Z index, never git+ssh or
+# git+https. README's "Private Python packages" has the setup, including the change ci.yml needs.
 dependencies = []
 
 [project.optional-dependencies]

@@ -46,6 +46,91 @@ on both stacks. (The Python template also ships it in its `dev` extras, so
 - `docs/notes/` — dated working notes
 - `CONTRIBUTING.md` — branch flow. **Never push directly to `main`.**
 
+## Private Python packages
+
+**Python only.** Avenue Z's private packages (`glean-chat-api-client`, `drive-api-client`) install
+from the Avenue Z index on Google Artifact Registry, with no GitHub token of any kind:
+
+    https://us-python.pkg.dev/avenue-z-shared-artifacts/python/simple/
+
+That one URL also serves public PyPI, so it is the only index this repo needs. Use `--index-url` /
+`PIP_INDEX_URL`, **never `--extra-index-url`**: PyPI holds a `0.0.0` placeholder under these names,
+reserved by Avenue Z, and pip would merge the two indexes. Never install them with `git+ssh` or
+`git+https`, never read them with a GitHub token or PAT, and never pass a token as a Docker `ARG` or
+`ENV`.
+
+**Laptop, once.** Run `gcloud auth login`. You need a reader binding on the `python` repository: ask
+an owner of `avenue-z-shared-artifacts`. If an install returns 401 or 403, check for stale ADC from
+other work (`gcloud auth application-default revoke` removes it).
+
+With pip, set the index per project (the venv's `pip.conf`, or `.envrc`), never globally:
+
+    pip install keyrings.google-artifactregistry-auth     # into this repo's venv
+    export PIP_INDEX_URL=https://us-python.pkg.dev/avenue-z-shared-artifacts/python/simple/
+
+With uv, install the keyring helper once, then add this to `pyproject.toml`:
+
+    uv tool install keyring --with keyrings.google-artifactregistry-auth
+
+    [[tool.uv.index]]
+    name = "avenue-z"
+    url = "https://oauth2accesstoken@us-python.pkg.dev/avenue-z-shared-artifacts/python/simple/"
+    default = true     # replaces PyPI, so this stays the only index
+
+    [tool.uv]
+    keyring-provider = "subprocess"
+
+`oauth2accesstoken` is a fixed username, not a secret. uv needs it to ask keyring for a token, and it
+stays out of `uv.lock`.
+
+**Pin exactly, to a version on the index.** A GitHub tag can be ahead of it until the release
+publishes. Ignore `0.0.0` in the listing:
+
+    pip index versions glean-chat-api-client              # then: glean-chat-api-client==<that version>
+    uv add --bounds exact glean-chat-api-client           # uv does both
+
+To upgrade, bump the `==` pin by hand, and have Dependabot `ignore` these names.
+
+**GitHub Actions (keyless).** The shared `python-ci` job in `.github/workflows/ci.yml` runs with no
+index auth, so the first private dependency turns `ci` red. Do not reach for a token. Replace that
+job with this one, which trades GitHub's OIDC token for a read-only index identity, and set `ci`'s
+`needs:` to `[test]`. It no longer runs the shared Bandit gate, so copy those steps across from
+[`python-ci.yml`](https://github.com/Avenue-Z/repo-template/blob/main/.github/workflows/python-ci.yml).
+
+    test:
+      runs-on: ubuntu-latest
+      timeout-minutes: 15
+      permissions:
+        contents: read
+        id-token: write
+      steps:
+        - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+          with: { python-version: '3.11', cache: pip }
+        - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+          with:
+            workload_identity_provider: projects/425863344019/locations/global/workloadIdentityPools/github/providers/github
+            service_account: pkg-reader@avenue-z-shared-artifacts.iam.gserviceaccount.com
+        - run: pip install keyrings.google-artifactregistry-auth
+        - run: pip install -e ".[dev]"
+          env:
+            PIP_INDEX_URL: https://us-python.pkg.dev/avenue-z-shared-artifacts/python/simple/
+        - run: make check
+
+With uv, replace the last three `run` steps with:
+
+        - run: pip install uv keyring keyrings.google-artifactregistry-auth
+        - run: uv sync --locked --extra dev
+        - run: uv run make check
+
+**Docker.** The token reaches the build only as a BuildKit secret, so the starter `Dockerfile` needs
+the recipe in the Install section of the
+[`glean-chat-api-client` README](https://github.com/Avenue-Z/glean-chat-api-client#install). It is the
+same for both packages.
+
+`contract-core` is the one exception: it is not on the index, and its repo is public, so it keeps the
+`git+https` line under *Data contracts*, with no token.
+
 ## Data contracts
 
 **Python only.** If this repo reads external data — a vendor API, an MCP tool, a CSV drop, LLM

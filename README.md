@@ -14,6 +14,7 @@ pipeline for the stack you pick.
 `scripts/init-repo.sh <python|node|next>` selects one and deletes the rest:
 
 - **`python`** — hatchling, `src/` layout, ruff + mypy + pytest (3.11–3.13 matrix), Cloud Run Dockerfile.
+  Private packages install from the Avenue Z index with no GitHub token; the generated README shows how.
 - **`node`** — a TypeScript library: vitest + eslint + `tsc --noEmit`.
 - **`next`** — Next.js App Router + TypeScript, CI that also runs `next build`, and one-command Vercel
   linking that **cannot deploy by accident** (`scripts/link-vercel.sh`).

@@ -340,6 +340,25 @@ add_dependabot_ecosystem() {
 EOF
   info "added the '${eco}' ecosystem to .github/dependabot.yml"
 }
+
+# The core file also watches the starter manifests under templates/, inside a TEMPLATE-ONLY block.
+# templates/ is deleted below, so the block goes too, BEFORE the stack's block is appended. The
+# markers are a contract: each must appear exactly once, opener first, or this dies. A missing
+# marker means the file is not the one this script was written against, and a lone opener would
+# make the sed range below delete to end of file.
+strip_template_only_dependabot() {
+  local f=.github/dependabot.yml open close
+  open="$(grep -c '^  # >>> TEMPLATE-ONLY' "${f}" || true)"
+  close="$(grep -c '^  # <<< TEMPLATE-ONLY' "${f}" || true)"
+  [ "${open}" = 1 ] && [ "${close}" = 1 ] \
+    && [ "$(grep -n '^  # >>> TEMPLATE-ONLY' "${f}" | cut -d: -f1)" -lt "$(grep -n '^  # <<< TEMPLATE-ONLY' "${f}" | cut -d: -f1)" ] \
+    || die "${f} does not carry exactly one '# >>> TEMPLATE-ONLY' marker followed by one '# <<< TEMPLATE-ONLY'
+       marker (found ${open} and ${close}). Refusing to guess which entries watch templates/: restore the markers."
+  sed '/^  # >>> TEMPLATE-ONLY/,/^  # <<< TEMPLATE-ONLY/d' "${f}" > "${f}.tmp"
+  mv "${f}.tmp" "${f}"
+  info "removed the TEMPLATE-ONLY entries (templates/) from ${f}"
+}
+strip_template_only_dependabot
 add_dependabot_ecosystem
 
 # Strip everything that is ABOUT the template rather than part of the generated repo. The

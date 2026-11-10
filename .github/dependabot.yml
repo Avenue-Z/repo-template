@@ -1,4 +1,4 @@
-# Only github-actions here: it is the one ecosystem the stack-agnostic core actually has.
+# github-actions is the one ecosystem the stack-agnostic core actually has.
 # scripts/init-repo.sh appends the pip OR npm block for the stack it selects.
 #
 # WHY THESE UPDATES ARE GROUPED, AND WHY THE INTERVAL IS MONTHLY.
@@ -25,3 +25,46 @@ updates:
       actions-minor-and-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+
+  # >>> TEMPLATE-ONLY — watches the starter manifests under templates/. scripts/init-repo.sh
+  # deletes everything between these markers at generation, because templates/ is deleted too.
+  # Do not remove the markers; init-repo.sh refuses to run without them.
+  #
+  # init-repo.sh copies these manifests into every new repo, so a stale dependency here is one
+  # stale dependency per repo created. Before this block, nothing watched them and the `sca` gate
+  # found each advisory by turning an unrelated PR red.
+  # Spec: template-docs/specs/2026-08-25-dependabot-template-manifests-design.md.
+  #
+  # Weekly, not monthly like github-actions above: that interval exists to save billed minutes in
+  # PRIVATE generated repos, and this block runs only in repo-template, which is public, so its
+  # Actions minutes are not billed. Majors stay ungrouped for the same reason as above.
+  - package-ecosystem: npm
+    directory: "/templates/node"
+    schedule: { interval: weekly }
+    target-branch: dev
+    open-pull-requests-limit: 5
+    groups:
+      node-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: npm
+    directory: "/templates/next"
+    schedule: { interval: weekly }
+    target-branch: dev
+    open-pull-requests-limit: 5
+    groups:
+      next-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  # Hygiene, not vulnerability management: the python starter has no lockfile, so osv-scanner
+  # never sees it. If the weekly volume proves annoying, this is the entry to drop first.
+  - package-ecosystem: pip
+    directory: "/templates/python"
+    schedule: { interval: weekly }
+    target-branch: dev
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  # <<< TEMPLATE-ONLY

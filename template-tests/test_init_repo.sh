@@ -169,6 +169,26 @@ assert_file "the python skeleton's conftest.py survived" tests/conftest.py
 assert_file "pyproject.toml copied" pyproject.toml
 assert_file "ci.yml copied" .github/workflows/ci.yml
 
+# DEPENDABOT: the core file watches the starter manifests under templates/ inside a TEMPLATE-ONLY
+# block, and init-repo.sh deletes that block, because it deletes templates/ too. A generated repo
+# that kept it would point Dependabot at three directories that do not exist. Asserted on the
+# PARSED file (the ecosystem@directory pairs), not by grep, so a reformat cannot fake a pass.
+dependabot_entries() { # <path> -> one "ecosystem@directory" per line, sorted
+  python3 - "$1" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+print("\n".join(sorted(f"{u['package-ecosystem']}@{u['directory']}" for u in d["updates"])))
+PY
+}
+assert_generated_dependabot() { # <ecosystem>
+  local f=.github/dependabot.yml
+  assert_eq "$(printf 'github-actions@/\n%s@/' "$1" | sort)" "$(dependabot_entries "$f")" \
+    "generated dependabot.yml declares github-actions plus exactly one '$1' entry at /"
+  assert_nomatch "generated dependabot.yml mentions /templates nowhere" '/templates' "$(cat "$f")"
+  assert_nomatch "generated dependabot.yml carries no TEMPLATE-ONLY marker" 'TEMPLATE-ONLY' "$(cat "$f")"
+}
+assert_generated_dependabot pip
+
 # Criterion 8 — no --team means no inert CODEOWNERS
 assert_no_file "no CODEOWNERS without --team" .github/CODEOWNERS
 assert_no_file "CODEOWNERS.tmpl removed" .github/CODEOWNERS.tmpl
@@ -427,5 +447,63 @@ out=$(./scripts/init-repo.sh python --no-push 2>&1)
 assert_eq "${diverged_sha}" "$(git rev-parse main)" "diverged main was NOT moved (its commit survives)"
 assert_match "says main has diverged" 'DIVERGED' "$out"
 assert_match "tells you to reconcile with a PR" 'Reconcile it by opening a PR' "$out"
+
+# ---------------------------------------------------------------------------------------
+# DEPENDABOT'S TEMPLATE-ONLY BLOCK.
+#
+# The core file's block is the contract init-repo.sh deletes against: each marker exactly once,
+# opener first, and every entry that watches /templates inside it. Checked on the core file
+# itself, so a marker typo fails HERE rather than at someone's first init.
+echo "dependabot: the core file's TEMPLATE-ONLY block is well-formed"
+core_dependabot="${REPO_ROOT}/.github/dependabot.yml"
+assert_eq "1" "$(grep -c '^  # >>> TEMPLATE-ONLY' "${core_dependabot}")" "the opening marker appears exactly once"
+assert_eq "1" "$(grep -c '^  # <<< TEMPLATE-ONLY' "${core_dependabot}")" "the closing marker appears exactly once"
+open_line="$(grep -n '^  # >>> TEMPLATE-ONLY' "${core_dependabot}" | cut -d: -f1)" || true
+close_line="$(grep -n '^  # <<< TEMPLATE-ONLY' "${core_dependabot}" | cut -d: -f1)" || true
+assert_ok "the opening marker comes before the closing one" [ "${open_line:-0}" -lt "${close_line:-0}" ]
+assert_eq "$(printf 'github-actions@/\nnpm@/templates/next\nnpm@/templates/node\npip@/templates/python')" \
+  "$(dependabot_entries "${core_dependabot}")" \
+  "the core file watches github-actions at / and the three starter manifests"
+outside_block="$(sed '/^  # >>> TEMPLATE-ONLY/,/^  # <<< TEMPLATE-ONLY/d' "${core_dependabot}")"
+assert_nomatch "every /templates entry sits inside the markers" '/templates' "${outside_block}"
+template_targets="$(python3 - "${core_dependabot}" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+print(" ".join(sorted({u.get("target-branch", "ABSENT") for u in d["updates"]})))
+PY
+)"
+assert_eq "dev" "${template_targets}" "every entry targets dev (dependabot/* -> dev is the branch flow)"
+
+# The other two stacks. The python run above covered pip; these cover npm, once per skeleton.
+for s in node next; do
+  echo "init-repo: ${s} — generated dependabot.yml"
+  cd "${WORK}" && rm -rf "repo-${s}" && git clone -q "${REPO_ROOT}" "repo-${s}" && cd "repo-${s}"
+  git checkout -qB dev
+  if ./scripts/init-repo.sh "${s}" --no-push >/dev/null 2>&1; then
+    pass "init-repo.sh ${s} exits 0"
+    assert_generated_dependabot npm
+  else
+    fail "init-repo.sh ${s} failed"
+  fi
+done
+
+# FAIL CLOSED. A file without the markers is not the file init-repo.sh was written against, and
+# guessing at that point is how a generated repo ships a broken config. A lone opener is the
+# dangerous case: a sed range with no closer deletes to end of file, taking any entry after it.
+echo "dependabot: init-repo.sh dies when the TEMPLATE-ONLY markers are missing or unpaired"
+for mutation in '/TEMPLATE-ONLY/d' '/^  # <<< TEMPLATE-ONLY/d'; do
+  cd "${WORK}" && rm -rf repo9 && git clone -q "${REPO_ROOT}" repo9 && cd repo9
+  git checkout -qB dev
+  sed "${mutation}" .github/dependabot.yml > .github/dependabot.yml.mut
+  mv .github/dependabot.yml.mut .github/dependabot.yml
+  mutated="$(cat .github/dependabot.yml)"
+  if out=$(./scripts/init-repo.sh python --no-push 2>&1); then
+    fail "init-repo.sh ran with dependabot.yml mutated by '${mutation}' — it must fail closed"
+  else
+    pass "init-repo.sh exits non-zero when dependabot.yml is mutated by '${mutation}'"
+  fi
+  assert_match "says the TEMPLATE-ONLY markers are wrong" 'TEMPLATE-ONLY' "$out"
+  assert_eq "${mutated}" "$(cat .github/dependabot.yml)" "left the broken dependabot.yml untouched"
+done
 
 finish
